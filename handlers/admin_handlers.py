@@ -954,7 +954,7 @@ async def sb_approval_start(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     sb_user_id = query.from_user.id
     sb_employee = await db_manager.get_employee_by_telegram_id(sb_user_id)
 
-    if not sb_employee or sb_employee['role'].lower() != 'security':
+    if not sb_employee or sb_employee['role'].lower() not in ['security', 'admin']:
         await query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
         return ConversationHandler.END
 

@@ -51,8 +51,12 @@ ADMIN_MAIN_MENU = 0
     SCHEDULE_CONFIRM_DEAL_MOVE,
 
     # Состояние для СБ
-    AWAITING_SB_2FA,             # 32
-) = range(37)
+    AWAITING_SB_2FA, 
+
+    # Родственники сотрудника
+    RELATIVES_MENU, REL_ADD_TYPE, REL_ADD_LAST_NAME, REL_ADD_FIRST_NAME, REL_ADD_MIDDLE_NAME, REL_ADD_PHONE, REL_ADD_BIRTH_DATE, REL_ADD_WORKPLACE,
+    REL_ADD_POSITION, REL_ADD_REG_ADDRESS, REL_ADD_LIV_ADDRESS,
+) = range(48)
 
 
 # ========== СЛОВАРИ И ВСПОМОГАТЕЛЬНЫЕ ДАННЫЕ ==========
@@ -64,7 +68,13 @@ EDITABLE_FIELDS = {
     'personal_phone': 'Личный телефон', 'work_phone': 'Рабочий телефон',
     'city': 'Город', 'role': 'Роль',
     'schedule_pattern': 'График работы (5/2, 2/2)',
-    'default_start_time': 'Начало работы (ЧЧ:ММ)', 'default_end_time': 'Конец работы (ЧЧ:ММ)'
+    'default_start_time': 'Начало работы (ЧЧ:ММ)', 'default_end_time': 'Конец работы (ЧЧ:ММ)',
+    'passport_data': '📄 Паспорт (Серия и Номер)',
+    'passport_issued_by': '🏢 Кем выдан паспорт',
+    'passport_dept_code': '🔢 Код подразделения',
+    'birth_date': '🎂 Дата рождения (ГГГГ-ММ-ДД)',
+    'registration_address': '🏠 Адрес регистрации',
+    'living_address': '🏙 Адрес проживания',
 }
 
 async def remove_reply_keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
@@ -454,27 +464,175 @@ async def show_employee_edit_menu(update: Update, context: ContextTypes.DEFAULT_
         
     return EDIT_MAIN_MENU
 
-async def start_edit_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Показывает меню выбора полей для редактирования."""
-    # Определяем, был ли это клик по кнопке или вызов из другого хендлера
+async def show_relatives_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Показывает список родственников и кнопку добавления."""
     query = update.callback_query
-    if query:
-        await query.answer()
+    await query.answer()
+    
+    employee_id = context.user_data['employee_to_edit_id']
+    relatives = await db_manager.get_employee_relatives(employee_id)
+    
+    text = "*Список родственников:*\n\n"
+    keyboard = []
+    
+    if not relatives:
+        text += "Нет добавленных родственников."
+    else:
+        for rel in relatives:
+            # Формируем строку: Мама: Иванова И.И.
+            info = f"{rel['relationship_type']}: {rel['last_name']} {rel['first_name']}"
+            text += f"• {info}\n"
+            # Кнопка удаления (опционально)
+            # keyboard.append([InlineKeyboardButton(f"❌ Удалить {rel['relationship_type']}", callback_data=f"del_rel_{rel['id']}")])
+
+    text += "\n\nВыберите действие:"
+    
+    keyboard.append([InlineKeyboardButton("➕ Добавить родственника", callback_data='add_new_relative')])
+    keyboard.append([InlineKeyboardButton("⬅️ Назад к полям", callback_data='back_to_fields')])
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    return RELATIVES_MENU
+
+# --- ЦЕПОЧКА ДОБАВЛЕНИЯ ---
+
+async def start_add_relative(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    context.user_data['new_relative'] = {} # Инициализируем словарь
+    
+    # Спрашиваем тип родства
+    buttons = [
+        [InlineKeyboardButton("Мама", callback_data="rel_type_Мама"), InlineKeyboardButton("Папа", callback_data="rel_type_Папа")],
+        [InlineKeyboardButton("Муж", callback_data="rel_type_Муж"), InlineKeyboardButton("Жена", callback_data="rel_type_Жена")],
+        [InlineKeyboardButton("Сын", callback_data="rel_type_Сын"), InlineKeyboardButton("Дочь", callback_data="rel_type_Дочь")],
+        [InlineKeyboardButton("Брат", callback_data="rel_type_Брат"), InlineKeyboardButton("Сестра", callback_data="rel_type_Сестра")],
+    ]
+    await query.edit_message_text("Кем приходится этот человек сотруднику?", reply_markup=InlineKeyboardMarkup(buttons))
+    return REL_ADD_TYPE
+
+async def get_rel_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    rel_type = query.data.split('_')[2]
+    context.user_data['new_relative']['relationship_type'] = rel_type
+    
+    await query.edit_message_text(f"Выбрано: {rel_type}.\n\nВведите **Фамилию** родственника:", parse_mode='Markdown')
+    return REL_ADD_LAST_NAME
+
+async def get_rel_last_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['new_relative']['last_name'] = update.message.text
+    await update.message.reply_text("Введите **Имя** родственника:")
+    return REL_ADD_FIRST_NAME
+
+async def get_rel_first_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['new_relative']['first_name'] = update.message.text
+    await update.message.reply_text("Введите **Отчество** (или '-' если нет):")
+    return REL_ADD_MIDDLE_NAME
+
+async def get_rel_middle_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text
+    context.user_data['new_relative']['middle_name'] = "" if text == '-' else text
+    await update.message.reply_text("Введите **Номер телефона** родственника:")
+    return REL_ADD_PHONE
+
+async def get_rel_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['new_relative']['phone_number'] = update.message.text
+    await update.message.reply_text("Введите **Дату рождения** (формат ГГГГ-ММ-ДД, например 1975-05-20):")
+    return REL_ADD_BIRTH_DATE
+
+async def get_rel_birth_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    import re
+    date_text = update.message.text
+    if not re.match(r'^\d{4}-\d{2}-\d{2}$', date_text):
+        await update.message.reply_text("❌ Неверный формат. Попробуйте еще раз (ГГГГ-ММ-ДД):")
+        return REL_ADD_BIRTH_DATE
+        
+    context.user_data['new_relative']['birth_date'] = date_text
+    await update.message.reply_text("Введите **Место работы** (Название компании):")
+    return REL_ADD_WORKPLACE
+
+async def get_rel_workplace(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['new_relative']['workplace'] = update.message.text
+    await update.message.reply_text("Введите **Должность**:")
+    return REL_ADD_POSITION
+
+async def get_rel_position(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['new_relative']['position'] = update.message.text
+    await update.message.reply_text("Введите **Адрес регистрации** (по прописке):")
+    return REL_ADD_REG_ADDRESS
+
+async def get_rel_reg_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['new_relative']['registration_address'] = update.message.text
+    
+    keyboard = [[InlineKeyboardButton("Совпадает с регистрацией", callback_data="same_address")]]
+    await update.message.reply_text(
+        "Введите **Адрес проживания** (фактический):\n(Или нажмите кнопку, если совпадает)", 
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return REL_ADD_LIV_ADDRESS
+
+async def get_rel_liv_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # Может прийти текст или коллбек
+    if update.callback_query:
+        await update.callback_query.answer()
+        # Копируем адрес регистрации
+        context.user_data['new_relative']['living_address'] = context.user_data['new_relative']['registration_address']
+        # Т.к. это callback, нам нужно отправить новое сообщение для финала или отредактировать старое
+        await update.callback_query.edit_message_text("Адрес скопирован.") 
+    else:
+        context.user_data['new_relative']['living_address'] = update.message.text
+
+    # Финализация
+    employee_id = context.user_data['employee_to_edit_id']
+    relative_data = context.user_data['new_relative']
+    
+    try:
+        await db_manager.add_relative(employee_id, relative_data)
+        success_text = f"✅ Родственник ({relative_data['relationship_type']}) успешно добавлен!"
+    except Exception as e:
+        logger.error(f"Error adding relative: {e}")
+        success_text = f"❌ Ошибка при сохранении: {e}"
+    
+    # Отправляем сообщение
+    if update.callback_query:
+        # Если нажали кнопку "Совпадает", мы уже ответили, шлем новое меню
+        pass 
+    else:
+        await update.message.reply_text(success_text)
+        
+    # Возвращаемся в меню родственников (нужно обновить update для вызова функции или отправить сообщение вручную)
+    # Проще вызвать функцию меню, но нужно подготовить dummy update или просто отправить текст с кнопками.
+    # Давайте отправим текст с кнопкой возврата.
+    
+    keyboard = [[InlineKeyboardButton("🔙 К списку родственников", callback_data='manage_relatives')]]
+    # Если это было текстовое сообщение
+    if not update.callback_query:
+        await update.message.reply_text("Готово.", reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+         await update.callback_query.message.reply_text("Готово.", reply_markup=InlineKeyboardMarkup(keyboard))
+         
+    return RELATIVES_MENU
+
+async def start_edit_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    if query: await query.answer()
 
     employee_id = context.user_data['employee_to_edit_id']
     employee = await db_manager.get_employee_by_id(employee_id)
 
     buttons = []
     for field, name in EDITABLE_FIELDS.items():
-        buttons.append([InlineKeyboardButton(name, callback_data=f"edit_data_field_{field}")])
+        # Исключаем старые поля relatives, если они остались в словаре
+        if 'relative' not in field: 
+            buttons.append([InlineKeyboardButton(name, callback_data=f"edit_data_field_{field}")])
+    
+    buttons.insert(0, [InlineKeyboardButton("👨‍👩‍👧 Управление родственниками", callback_data='manage_relatives')])
+
     buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data='back_to_edit_menu')])
 
-    text = (
-        f"Редактирование данных: *{employee['full_name']}*\n\nВыберите поле для изменения:"
-    )
+    text = f"Редактирование данных: *{employee['full_name']}*\nВыберите поле:"
+    
     reply_markup = InlineKeyboardMarkup(buttons)
-
-    # Если есть query - редактируем сообщение. Если нет - отправляем новое.
     if query:
         await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
     else:
@@ -1239,7 +1397,29 @@ admin_conv = ConversationHandler(
             CallbackQueryHandler(start_reset_2fa_confirm, pattern='^reset_2fa_start$'),
             CallbackQueryHandler(start_edit_employee, pattern='^back_to_employee_list$'),
         ],
-        EDIT_DATA_SELECT_FIELD: [CallbackQueryHandler(request_edit_data_value, pattern='^edit_data_field_'), CallbackQueryHandler(show_employee_edit_menu, pattern='^back_to_edit_menu$')],
+        EDIT_DATA_SELECT_FIELD: [
+            CallbackQueryHandler(request_edit_data_value, pattern='^edit_data_field_'),
+            CallbackQueryHandler(show_relatives_menu, pattern='^manage_relatives$'),
+            CallbackQueryHandler(show_employee_edit_menu, pattern='^back_to_edit_menu$')
+        ],
+        RELATIVES_MENU: [
+            CallbackQueryHandler(start_add_relative, pattern='^add_new_relative$'),
+            CallbackQueryHandler(start_edit_data, pattern='^back_to_fields$'), # Назад к списку полей
+            CallbackQueryHandler(show_relatives_menu, pattern='^manage_relatives$'), # Рефреш
+        ],
+        REL_ADD_TYPE: [CallbackQueryHandler(get_rel_type, pattern='^rel_type_')],
+        REL_ADD_LAST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_rel_last_name)],
+        REL_ADD_FIRST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_rel_first_name)],
+        REL_ADD_MIDDLE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_rel_middle_name)],
+        REL_ADD_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_rel_phone)],
+        REL_ADD_BIRTH_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_rel_birth_date)],
+        REL_ADD_WORKPLACE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_rel_workplace)],
+        REL_ADD_POSITION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_rel_position)],
+        REL_ADD_REG_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_rel_reg_address)],
+        REL_ADD_LIV_ADDRESS: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, get_rel_liv_address),
+            CallbackQueryHandler(get_rel_liv_address, pattern='^same_address$')
+        ],
         EDIT_DATA_GET_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_edited_data_value)],
         EDIT_DATA_GET_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_data_with_reason)],
         AWAITING_RESET_2FA_CONFIRM: [CallbackQueryHandler(finalize_reset_2fa, pattern='^confirm_reset_yes$'), CallbackQueryHandler(show_employee_edit_menu, pattern='^back_to_edit_menu$')],

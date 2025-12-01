@@ -169,9 +169,23 @@ async def add_employee(employee_data: dict) -> int:
 async def update_employee_field(employee_id: int, field: str, value: Any):
     """Безопасно обновляет одно поле для указанного сотрудника."""
     allowed_fields = [
-        'last_name', 'first_name', 'middle_name',
-        'position', 'personal_phone', 'work_phone', 'city',
-        'role', 'schedule_pattern', 'default_start_time', 'default_end_time'
+        'last_name', 
+        'first_name', 
+        'middle_name',
+        'position', 
+        'personal_phone', 
+        'work_phone', 
+        'city',
+        'role', 
+        'schedule_pattern', 
+        'default_start_time', 
+        'default_end_time',
+        'passport_data', 
+        'passport_issued_by', 
+        'passport_dept_code',
+        'birth_date',
+        'registration_address', 
+        'living_address'
     ]
     if field not in allowed_fields:
         raise ValueError(f"Field '{field}' is not allowed for update.")
@@ -190,7 +204,7 @@ async def sync_employee_full_name(employee_id: int):
         WHERE id = %s
     """
     await execute(query, (employee_id,))
-    
+
 async def find_employee_by_field(field: str, value: Any) -> Optional[Dict[str, Any]]:
     """
     Ищет сотрудника по заданному полю и значению.
@@ -375,3 +389,37 @@ async def find_conflicting_deals_for_schedule(employee_id: int, start_date_str: 
     """
 
     return await fetch_all(query, args)
+
+async def add_relative(employee_id: int, relative_data: dict):
+    """Добавляет родственника в отдельную таблицу."""
+    query = """
+        INSERT INTO employee_relatives (
+            employee_id, relationship_type, last_name, first_name, middle_name,
+            phone_number, birth_date, workplace, position,
+            registration_address, living_address
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """
+    args = (
+        employee_id,
+        relative_data.get('relationship_type'),
+        relative_data.get('last_name'),
+        relative_data.get('first_name'),
+        relative_data.get('middle_name'),
+        relative_data.get('phone_number'),
+        relative_data.get('birth_date'), # Ожидается строка 'YYYY-MM-DD' или объект date
+        relative_data.get('workplace'),
+        relative_data.get('position'),
+        relative_data.get('registration_address'),
+        relative_data.get('living_address')
+    )
+    await execute(query, args)
+
+async def get_employee_relatives(employee_id: int) -> List[Dict[str, Any]]:
+    """Получает список всех родственников сотрудника."""
+    query = "SELECT * FROM employee_relatives WHERE employee_id = %s ORDER BY relationship_type"
+    return await fetch_all(query, (employee_id,))
+
+async def delete_relative(relative_id: int):
+    """Удаляет родственника по ID записи."""
+    query = "DELETE FROM employee_relatives WHERE id = %s"
+    await execute(query, (relative_id,))

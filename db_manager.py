@@ -423,3 +423,22 @@ async def delete_relative(relative_id: int):
     """Удаляет родственника по ID записи."""
     query = "DELETE FROM employee_relatives WHERE id = %s"
     await execute(query, (relative_id,))
+
+async def fire_employee(employee_id: int):
+    """
+    Увольняет сотрудника:
+    1. Устанавливает дату увольнения (termination_date) на сегодня.
+    2. Меняет статус на offline.
+    """
+    query = "UPDATE employees SET termination_date = CURDATE(), status = 'offline' WHERE id = %s"
+    await execute(query, (employee_id,))
+
+async def delete_employee_permanently(employee_id: int):
+    """
+    Полностью удаляет запись о сотруднике из БД.
+    Осторожно: удалит также связанные записи (родственников, логи и т.д., если настроены CASCADE в БД).
+    """
+    await execute("DELETE FROM employee_relatives WHERE employee_id = %s", (employee_id,))
+    await execute("DELETE FROM schedule_overrides WHERE employee_id = %s", (employee_id,))
+    
+    await execute("DELETE FROM employees WHERE id = %s", (employee_id,))

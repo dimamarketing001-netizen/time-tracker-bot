@@ -56,7 +56,10 @@ ADMIN_MAIN_MENU = 0
     # Родственники сотрудника
     RELATIVES_MENU, REL_ADD_TYPE, REL_ADD_LAST_NAME, REL_ADD_FIRST_NAME, REL_ADD_MIDDLE_NAME, REL_ADD_PHONE, REL_ADD_BIRTH_DATE, REL_ADD_WORKPLACE,
     REL_ADD_POSITION, REL_ADD_REG_ADDRESS, REL_ADD_LIV_ADDRESS,
-) = range(48)
+
+    AWAITING_FIRE_EMPLOYEE_2FA,
+    AWAITING_DELETE_EMPLOYEE_2FA,
+) = range(50)
 
 
 # ========== СЛОВАРИ И ВСПОМОГАТЕЛЬНЫЕ ДАННЫЕ ==========
@@ -69,12 +72,12 @@ EDITABLE_FIELDS = {
     'city': 'Город', 'role': 'Роль',
     'schedule_pattern': 'График работы (5/2, 2/2)',
     'default_start_time': 'Начало работы (ЧЧ:ММ)', 'default_end_time': 'Конец работы (ЧЧ:ММ)',
-    'passport_data': '📄 Паспорт (Серия и Номер)',
-    'passport_issued_by': '🏢 Кем выдан паспорт',
-    'passport_dept_code': '🔢 Код подразделения',
-    'birth_date': '🎂 Дата рождения (ГГГГ-ММ-ДД)',
-    'registration_address': '🏠 Адрес регистрации',
-    'living_address': '🏙 Адрес проживания',
+    'passport_data': 'Паспорт (Серия и Номер)',
+    'passport_issued_by': 'Кем выдан паспорт',
+    'passport_dept_code': 'Код подразделения',
+    'birth_date': 'Дата рождения (ГГГГ-ММ-ДД)',
+    'registration_address': 'Адрес регистрации',
+    'living_address': 'Адрес проживания',
 }
 
 async def remove_reply_keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
@@ -423,15 +426,16 @@ async def start_edit_employee(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def show_employee_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    # Сообщение, которое будет отправлено или отредактировано
-    message_sender = None
-
+    # Определяем, кто вызывает меню (сообщение или callback)
     if query:
         await query.answer()
-        message_sender = query.message
+        user_id = query.from_user.id
+        message_sender = query
     else:
+        user_id = update.message.from_user.id
         message_sender = update.message
     
+    # Получаем ID редактируемого сотрудника
     if query and query.data.startswith('edit_emp_'):
         employee_id = int(query.data.split('_')[2])
         context.user_data['employee_to_edit_id'] = employee_id
@@ -439,28 +443,37 @@ async def show_employee_edit_menu(update: Update, context: ContextTypes.DEFAULT_
         employee_id = context.user_data.get('employee_to_edit_id')
 
     if not employee_id:
-        await message_sender.reply_text("Ошибка: ID сотрудника не найден.")
+        await context.bot.send_message(chat_id=user_id, text="Ошибка: ID сотрудника не найден.")
         return await start_edit_employee(update, context)
 
-    employee = await db_manager.get_employee_by_id(employee_id)
-    if not employee:
-        await message_sender.reply_text("Ошибка: сотрудник не найден.")
+    target_employee = await db_manager.get_employee_by_id(employee_id)
+    if not target_employee:
+        await context.bot.send_message(chat_id=user_id, text="Ошибка: сотрудник не найден.")
         return await start_edit_employee(update, context)
+
+    admin_employee = await db_manager.get_employee_by_telegram_id(user_id)
+    admin_role = admin_employee['role'].lower() if admin_employee else 'employee'
 
     keyboard = [
         [InlineKeyboardButton("📝 Изменить данные", callback_data="edit_data_start")],
         [InlineKeyboardButton("🔄 Сбросить 2FA", callback_data="reset_2fa_start")],
-        [InlineKeyboardButton("⬅️ Назад к списку сотрудников", callback_data="back_to_employee_list")]
     ]
+
+    if admin_role in ['admin', 'security']:
+        keyboard.append([InlineKeyboardButton("❌ Уволить сотрудника", callback_data="fire_employee_start")])
+
+    if admin_role == 'admin':
+        keyboard.append([InlineKeyboardButton("🗑 УДАЛИТЬ ИЗ БД", callback_data="delete_employee_start")])
+
+    keyboard.append([InlineKeyboardButton("⬅️ Назад к списку сотрудников", callback_data="back_to_employee_list")])
     
-    text = f"Редактирование: *{employee['full_name']}*\n\nВыберите действие:"
+    text = f"Редактирование: *{target_employee['full_name']}*\nДолжность: {target_employee.get('position', '-')}\n\nВыберите действие:"
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Если есть query, редактируем. Если нет (был MessageHandler), отправляем новое сообщение.
     if query:
         await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
     else:
-        await message_sender.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
         
     return EDIT_MAIN_MENU
 
@@ -1345,6 +1358,89 @@ async def view_absences_generate_report(update: Update, context: ContextTypes.DE
     await query.edit_message_text(report_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     return VIEW_ABSENCES_SHOW_REPORT
 
+async def start_fire_employee(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    
+    employee_id = context.user_data['employee_to_edit_id']
+    employee = await db_manager.get_employee_by_id(employee_id)
+    
+    await query.edit_message_text(
+        f"⚠️ Вы собираетесь **УВОЛИТЬ** сотрудника *{employee['full_name']}*.\n"
+        f"Статус сменится на 'Уволен', доступ к боту будет закрыт.\n\n"
+        f"Введите ваш код 2FA для подтверждения:",
+        parse_mode='Markdown'
+    )
+    return AWAITING_FIRE_EMPLOYEE_2FA
+
+async def finalize_fire_employee(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # Проверка 2FA админа
+    admin_employee = await db_manager.get_employee_by_telegram_id(update.effective_user.id)
+    code = update.message.text.strip()
+    
+    if admin_employee and admin_employee.get('totp_secret') and verify_totp(admin_employee['totp_secret'], code):
+        employee_id = context.user_data['employee_to_edit_id']
+        target_employee = await db_manager.get_employee_by_id(employee_id)
+        
+        try:
+            await db_manager.fire_employee(employee_id)
+            await update.message.reply_text(f"✅ Сотрудник *{target_employee['full_name']}* успешно уволен.", parse_mode='Markdown')
+            # Логируем действие
+            await db_manager.log_employee_change(
+                admin_id=admin_employee['id'], 
+                employee_id=employee_id, 
+                field="employment_status", 
+                old_value="active", 
+                new_value="fired", 
+                reason="Admin panel fire action"
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка при увольнении: {e}")
+            
+        context.user_data.clear()
+        return ConversationHandler.END
+    else:
+        await update.message.reply_text("❌ Неверный код 2FA. Попробуйте снова или нажмите /cancel.")
+        return AWAITING_FIRE_EMPLOYEE_2FA
+
+# --- ЛОГИКА УДАЛЕНИЯ ---
+
+async def start_delete_employee(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    
+    employee_id = context.user_data['employee_to_edit_id']
+    employee = await db_manager.get_employee_by_id(employee_id)
+    
+    await query.edit_message_text(
+        f"⛔️☢️ **ВНИМАНИЕ! УДАЛЕНИЕ!** ☢️⛔️\n\n"
+        f"Вы собираетесь **ПОЛНОСТЬЮ УДАЛИТЬ** сотрудника *{employee['full_name']}* из базы данных.\n"
+        f"История смен, график, родственники — всё будет удалено безвозвратно.\n\n"
+        f"Введите ваш код 2FA для подтверждения удаления:",
+        parse_mode='Markdown'
+    )
+    return AWAITING_DELETE_EMPLOYEE_2FA
+
+async def finalize_delete_employee(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    admin_employee = await db_manager.get_employee_by_telegram_id(update.effective_user.id)
+    code = update.message.text.strip()
+    
+    if admin_employee and admin_employee.get('totp_secret') and verify_totp(admin_employee['totp_secret'], code):
+        employee_id = context.user_data['employee_to_edit_id']
+        target_employee = await db_manager.get_employee_by_id(employee_id)
+        
+        try:
+            await db_manager.delete_employee_permanently(employee_id)
+            await update.message.reply_text(f"🗑 Сотрудник *{target_employee['full_name']}* был полностью удален из БД.", parse_mode='Markdown')
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка БД при удалении: {e}")
+            
+        context.user_data.clear()
+        return ConversationHandler.END
+    else:
+        await update.message.reply_text("❌ Неверный код 2FA. Попробуйте снова или нажмите /cancel.")
+        return AWAITING_DELETE_EMPLOYEE_2FA
+    
 # ========== РЕГИСТРАЦИЯ ConversationHandler'ов ==========
 admin_conv = ConversationHandler(
     entry_points=[CommandHandler("admin", admin_panel)],
@@ -1395,6 +1491,8 @@ admin_conv = ConversationHandler(
         EDIT_MAIN_MENU: [
             CallbackQueryHandler(start_edit_data, pattern='^edit_data_start$'),
             CallbackQueryHandler(start_reset_2fa_confirm, pattern='^reset_2fa_start$'),
+            CallbackQueryHandler(start_fire_employee, pattern='^fire_employee_start$'),
+            CallbackQueryHandler(start_delete_employee, pattern='^delete_employee_start$'),
             CallbackQueryHandler(start_edit_employee, pattern='^back_to_employee_list$'),
         ],
         EDIT_DATA_SELECT_FIELD: [
@@ -1450,8 +1548,6 @@ admin_conv = ConversationHandler(
             CallbackQueryHandler(view_schedule_start, pattern='^back_to_view_list$'),
             CallbackQueryHandler(admin_panel, pattern='^back_to_admin_panel$'),
         ],
-        
-        # === ПОТОК: Просмотр отгулов ===
         VIEW_ABSENCES_SELECT_PERIOD: [
             CallbackQueryHandler(view_absences_generate_report, pattern='^abs_period_'),
             CallbackQueryHandler(show_schedule_main_menu, pattern='^go_to_schedule_menu$')
@@ -1459,6 +1555,8 @@ admin_conv = ConversationHandler(
         VIEW_ABSENCES_SHOW_REPORT: [
             CallbackQueryHandler(show_schedule_main_menu, pattern='^go_to_schedule_menu$')
         ],
+        AWAITING_FIRE_EMPLOYEE_2FA: [MessageHandler(filters.Regex(r'^\d{6}$'), finalize_fire_employee)],
+        AWAITING_DELETE_EMPLOYEE_2FA: [MessageHandler(filters.Regex(r'^\d{6}$'), finalize_delete_employee)],
     },
     fallbacks=[CommandHandler('cancel', cancel)],
     per_user=True,

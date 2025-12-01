@@ -1,5 +1,5 @@
 import logging
-from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
+from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import (
     Application,
     ConversationHandler,
@@ -29,19 +29,20 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
+BTN_START_SHIFT = "🟢 Начать смену"
+BTN_END_SHIFT = "🔴 Закончить смену"
+BTN_REPORT = "📊 Отчет"
+BTN_ADMIN = "🔐 Админка"
+
 async def post_init(application: Application):
-    """
-    Выполняется один раз после запуска бота.
-    Инициализирует пулы соединений и клиенты.
-    """
+    """Инициализация при запуске."""
     try:
         redis_op_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
-        redis_op_client.ping() # Проверяем соединение
+        redis_op_client.ping()
         application.bot_data['redis_op_client'] = redis_op_client
         logger.info("Redis connection (db 0) established successfully.")
     except redis.exceptions.ConnectionError as e:
         logger.error(f"FATAL: Could not connect to Redis: {e}")
-        # В реальном приложении здесь можно остановить запуск бота
         application.bot_data['redis_op_client'] = None
 
     await db_manager.init_pool()
@@ -50,18 +51,33 @@ async def post_init(application: Application):
 
 
 async def post_shutdown(application: Application):
-    """
-    Выполняется при остановке бота.
-    Корректно закрывает пул соединений с БД.
-    """
+    """Очистка при остановке."""
     await db_manager.close_pool()
 
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает команду /start."""
+    """
+    Обрабатывает команду /start.
+    Проверяет роль пользователя и выдает соответствующую клавиатуру.
+    """
+    user_id = update.effective_user.id
+    employee = await db_manager.get_employee_by_telegram_id(user_id)
+    
+    # Базовые кнопки для всех
+    keyboard = [
+        [KeyboardButton(BTN_START_SHIFT), KeyboardButton(BTN_END_SHIFT)],
+        [KeyboardButton(BTN_REPORT)]
+    ]
+
+    # Добавляем кнопку админки, если есть права
+    if employee and employee.get('role', '').lower() in ['admin', 'security']:
+        keyboard.append([KeyboardButton(BTN_ADMIN)])
+
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
     await update.message.reply_text(
         "Добро пожаловать в систему учета рабочего времени!\n"
-        "Используйте /on чтобы начать рабочий день."
+        "Используйте кнопки меню для управления статусом.",
+        reply_markup=reply_markup
     )
 
 def main() -> None:
@@ -78,7 +94,10 @@ def main() -> None:
     # Это позволяет боту запомнить, что он ждет TOTP-код именно для входа,
     # а не для чего-то другого.
     on_handler = ConversationHandler(
-        entry_points=[CommandHandler("on", user_handlers.clock_in)],
+        entry_points=[
+            CommandHandler("on", user_handlers.clock_in),
+            MessageHandler(filters.Regex(f"^{BTN_START_SHIFT}$"), user_handlers.clock_in)
+        ],
         states={
             auth_handlers.AWAITING_ACTION_TOTP: [
                 MessageHandler(filters.Regex(r'^\d{6}$'), auth_handlers.verify_action_totp)
@@ -94,7 +113,10 @@ def main() -> None:
 
     # 3. Обработчик для команды /off (также в виде диалога)
     off_handler = ConversationHandler(
-        entry_points=[CommandHandler("off", user_handlers.clock_out_menu)],
+        entry_points=[
+            CommandHandler("off", user_handlers.clock_out_menu),
+            MessageHandler(filters.Regex(f"^{BTN_END_SHIFT}$"), user_handlers.clock_out_menu)
+        ],
         states={
             'AWAITING_REASON': [
                 CallbackQueryHandler(user_handlers.clock_out_callback, pattern='^off_reason_'),
@@ -114,13 +136,14 @@ def main() -> None:
 
     # 4. Простая команда /start
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("report", user_handlers.generate_report_placeholder))
 
-    # Назначаем асинхронные функции, которые будут выполнены при запуске и остановке
+    # Обработчик кнопки "📊 Отчет" и команды /report
+    application.add_handler(CommandHandler("report", user_handlers.generate_report_placeholder))
+    application.add_handler(MessageHandler(filters.Regex(f"^{BTN_REPORT}$"), user_handlers.generate_report_placeholder))
+
     application.post_init = post_init
     application.post_shutdown = post_shutdown
 
-    # Запуск бота
     logger.info("Bot is starting...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 

@@ -18,6 +18,8 @@ from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
 
 logger = logging.getLogger(__name__)
 
+BTN_ADMIN_TEXT = "🔐 Админка" 
+
 # --- Константы состояний ---
 # Главное меню
 ADMIN_MAIN_MENU = 0
@@ -1443,7 +1445,10 @@ async def finalize_delete_employee(update: Update, context: ContextTypes.DEFAULT
     
 # ========== РЕГИСТРАЦИЯ ConversationHandler'ов ==========
 admin_conv = ConversationHandler(
-    entry_points=[CommandHandler("admin", admin_panel)],
+    entry_points=[
+        CommandHandler("admin", admin_panel),
+        MessageHandler(filters.Regex(f"^{BTN_ADMIN_TEXT}$"), admin_panel)
+    ],
     states={
         # === УРОВЕНЬ 1: ГЛАВНОЕ МЕНЮ ===
         ADMIN_MAIN_MENU: [

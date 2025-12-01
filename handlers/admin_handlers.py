@@ -29,7 +29,7 @@ ADMIN_MAIN_MENU = 0
     SCHEDULE_MAIN_MENU,          # 2
 
     # Поток добавления сотрудника
-    ADD_LAST_NAME, ADD_FIRST_NAME, ADD_MIDDLE_NAME, ADD_POSITION, AWAITING_CONTACT, ADD_SCHEDULE_PATTERN, ADD_ROLE,
+    ADD_LAST_NAME, ADD_FIRST_NAME, ADD_MIDDLE_NAME, ADD_CITY, ADD_PHONE, ADD_POSITION, AWAITING_CONTACT, ADD_SCHEDULE_PATTERN, ADD_ROLE,
     ADD_START_TIME, ADD_END_TIME, ADD_EMPLOYEE_MENU, SELECT_FIELD, GET_FIELD_VALUE,
     AWAITING_ADD_EMPLOYEE_2FA,   # 3-13
 
@@ -52,7 +52,7 @@ ADMIN_MAIN_MENU = 0
 
     # Состояние для СБ
     AWAITING_SB_2FA,             # 32
-) = range(35)
+) = range(37)
 
 
 # ========== СЛОВАРИ И ВСПОМОГАТЕЛЬНЫЕ ДАННЫЕ ==========
@@ -148,13 +148,30 @@ async def get_middle_name(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     else:
         context.user_data['new_employee']['middle_name'] = text
 
-    # Формируем клавиатуру должностей
+    await update.message.reply_text("Принято. Введите **Город** проживания сотрудника:", parse_mode='Markdown')
+    return ADD_CITY
+
+async def get_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    city = update.message.text.strip()
+    context.user_data['new_employee']['city'] = city
+    
+    await update.message.reply_text(
+        "Город сохранен.\n\n"
+        "Введите **Личный номер телефона** (текстом, например: +79990001122):", 
+        parse_mode='Markdown'
+    )
+    return ADD_PHONE
+
+async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    phone = update.message.text.strip()
+    context.user_data['new_employee']['personal_phone'] = phone
+    
     positions = ["Кассир", "Инспектор ФБ", "Оператор", "Чат менеджер", "СБ", "Администратор", "Логист", "Менеджер АХО"]
     buttons = [InlineKeyboardButton(pos, callback_data=f"pos_{pos}") for pos in positions]
     keyboard_rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
     reply_markup = InlineKeyboardMarkup(keyboard_rows)
     
-    await update.message.reply_text("Данные ФИО сохранены. Теперь выберите должность:", reply_markup=reply_markup)
+    await update.message.reply_text("Телефон сохранен. Выберите **Должность**:", reply_markup=reply_markup, parse_mode='Markdown')
     return ADD_POSITION
 
 async def get_position(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1197,6 +1214,8 @@ admin_conv = ConversationHandler(
         ADD_LAST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_last_name)],
         ADD_FIRST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_first_name)],
         ADD_MIDDLE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_middle_name)],
+        ADD_CITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_city)],
+        ADD_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_phone)],
         ADD_POSITION: [CallbackQueryHandler(get_position, pattern='^pos_')],
         AWAITING_CONTACT: [MessageHandler(filters.CONTACT, get_contact), MessageHandler(filters.TEXT, wrong_input_in_contact_step)],
         ADD_SCHEDULE_PATTERN: [CallbackQueryHandler(get_schedule_pattern, pattern='^sched_')],

@@ -21,11 +21,13 @@ def security_required(func):
     async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         user_id = update.effective_user.id
         employee = await db_manager.get_employee_by_telegram_id(user_id)
-        if employee and employee['role'] == 'security':
-            return await func(update, context, *args, **kwargs)
-        else:
-            await update.message.reply_text("У вас нет прав для выполнения этой команды.")
+        role = employee.get('role', '').lower() if employee else 'unknown'
+        if role not in {'security', 'admin'}:
+            await update.message.reply_text(f"У вас нет прав для выполнения этой команды. Роль: {role}")
             return
+
+        return await func(update, context, *args, **kwargs)
+        
     return wrapped
 
 def verify_totp(secret: str, code: str) -> bool:

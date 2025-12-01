@@ -211,9 +211,10 @@ async def generate_report_placeholder(update: Update, context: ContextTypes.DEFA
     """Временная заглушка для команды /report."""
     # Проверяем, что команду вызывает админ или СБ
     employee = await db_manager.get_employee_by_telegram_id(update.effective_user.id)
-    if not employee or employee['role'].lower() not in ['admin', 'security']:
-        await update.message.reply_text("У вас нет прав для выполнения этого действия.")
-        return
+
+    if not employee or employee['role'].lower() not in ['security', 'admin']:
+        await update.message.reply_text(f"У вас нет прав для выполнения этого действия. Роль:{employee['role'].lower()}")
+        return 
 
     await update.message.reply_text(
         "Функция генерации отчетов находится в разработке.\n\n"

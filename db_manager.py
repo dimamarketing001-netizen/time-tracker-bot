@@ -168,9 +168,9 @@ async def add_employee(employee_data: dict) -> int:
 
 async def update_employee_field(employee_id: int, field: str, value: Any):
     """Безопасно обновляет одно поле для указанного сотрудника."""
-    # Белый список полей, которые можно изменять
     allowed_fields = [
-        'full_name', 'position', 'personal_phone', 'work_phone', 'city',
+        'last_name', 'first_name', 'middle_name',
+        'position', 'personal_phone', 'work_phone', 'city',
         'role', 'schedule_pattern', 'default_start_time', 'default_end_time'
     ]
     if field not in allowed_fields:
@@ -179,6 +179,18 @@ async def update_employee_field(employee_id: int, field: str, value: Any):
     query = f"UPDATE employees SET `{field}` = %s WHERE id = %s"
     await execute(query, (value, employee_id))
 
+async def sync_employee_full_name(employee_id: int):
+    """
+    Принудительно обновляет поле full_name на основе last_name, first_name, middle_name.
+    Используется после редактирования частей имени.
+    """
+    query = """
+        UPDATE employees 
+        SET full_name = TRIM(CONCAT(IFNULL(last_name, ''), ' ', IFNULL(first_name, ''), ' ', IFNULL(middle_name, '')))
+        WHERE id = %s
+    """
+    await execute(query, (employee_id,))
+    
 async def find_employee_by_field(field: str, value: Any) -> Optional[Dict[str, Any]]:
     """
     Ищет сотрудника по заданному полю и значению.

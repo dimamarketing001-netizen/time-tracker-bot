@@ -29,7 +29,7 @@ ADMIN_MAIN_MENU = 0
     SCHEDULE_MAIN_MENU,          # 2
 
     # Поток добавления сотрудника
-    ADD_FULL_NAME, ADD_POSITION, AWAITING_CONTACT, ADD_SCHEDULE_PATTERN, ADD_ROLE,
+    ADD_LAST_NAME, ADD_FIRST_NAME, ADD_MIDDLE_NAME, ADD_POSITION, AWAITING_CONTACT, ADD_SCHEDULE_PATTERN, ADD_ROLE,
     ADD_START_TIME, ADD_END_TIME, ADD_EMPLOYEE_MENU, SELECT_FIELD, GET_FIELD_VALUE,
     AWAITING_ADD_EMPLOYEE_2FA,   # 3-13
 
@@ -52,13 +52,15 @@ ADMIN_MAIN_MENU = 0
 
     # Состояние для СБ
     AWAITING_SB_2FA,             # 32
-) = range(33)
+) = range(35)
 
 
 # ========== СЛОВАРИ И ВСПОМОГАТЕЛЬНЫЕ ДАННЫЕ ==========
-
 EDITABLE_FIELDS = {
-    'full_name': 'ФИО', 'position': 'Должность',
+    'last_name': 'Фамилия', 
+    'first_name': 'Имя', 
+    'middle_name': 'Отчество',
+    'position': 'Должность',
     'personal_phone': 'Личный телефон', 'work_phone': 'Рабочий телефон',
     'city': 'Город', 'role': 'Роль',
     'schedule_pattern': 'График работы (5/2, 2/2)',
@@ -125,16 +127,34 @@ async def start_add_employee(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     await query.answer()
     context.user_data['new_employee'] = {}
-    await query.edit_message_text("Начинаем добавление нового сотрудника. Введите ФИО:")
-    return ADD_FULL_NAME
 
-async def get_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data['new_employee']['full_name'] = update.message.text
+    await query.edit_message_text("Начинаем добавление нового сотрудника.\n\nВведите **Фамилию**:", parse_mode='Markdown')
+    return ADD_LAST_NAME
+
+async def get_last_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['new_employee']['last_name'] = update.message.text.strip()
+    await update.message.reply_text("Отлично. Теперь введите **Имя**:", parse_mode='Markdown')
+    return ADD_FIRST_NAME
+
+async def get_first_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['new_employee']['first_name'] = update.message.text.strip()
+    await update.message.reply_text("Хорошо. Введите **Отчество** (если нет, поставьте прочерк '-'):", parse_mode='Markdown')
+    return ADD_MIDDLE_NAME
+
+async def get_middle_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if text == '-':
+        context.user_data['new_employee']['middle_name'] = ""
+    else:
+        context.user_data['new_employee']['middle_name'] = text
+
+    # Формируем клавиатуру должностей
     positions = ["Кассир", "Инспектор ФБ", "Оператор", "Чат менеджер", "СБ", "Администратор", "Логист", "Менеджер АХО"]
     buttons = [InlineKeyboardButton(pos, callback_data=f"pos_{pos}") for pos in positions]
     keyboard_rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
     reply_markup = InlineKeyboardMarkup(keyboard_rows)
-    await update.message.reply_text("Отлично. Теперь выберите должность:", reply_markup=reply_markup)
+    
+    await update.message.reply_text("Данные ФИО сохранены. Теперь выберите должность:", reply_markup=reply_markup)
     return ADD_POSITION
 
 async def get_position(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -313,9 +333,17 @@ async def finalize_add_employee(update: Update, context: ContextTypes.DEFAULT_TY
     admin_employee = await db_manager.get_employee_by_telegram_id(update.effective_user.id)
     if admin_employee and admin_employee.get('totp_secret') and verify_totp(admin_employee['totp_secret'], update.message.text):
         employee_data = context.user_data['new_employee']
+
+        l = employee_data.get('last_name', '')
+        f = employee_data.get('first_name', '')
+        m = employee_data.get('middle_name', '')
+        # Убираем лишние пробелы, если отчества нет
+        full_name = f"{l} {f} {m}".strip()
+        employee_data['full_name'] = full_name
+
         try:
             await db_manager.add_employee(employee_data)
-            await update.message.reply_text(f"✅ Сотрудник {employee_data['full_name']} успешно добавлен!")
+            await update.message.reply_text(f"✅ Сотрудник {full_name} успешно добавлен!")
         except Exception as e:
             await update.message.reply_text(f"❌ Произошла ошибка при добавлении в базу данных: {e}")
     else:
@@ -492,30 +520,31 @@ async def save_data_with_reason(update: Update, context: ContextTypes.DEFAULT_TY
     new_value = context.user_data.pop('new_field_value')
     employee_id = context.user_data['employee_to_edit_id']
     
-    # --- ИСПРАВЛЕНИЕ: Получаем ID админа из базы, а не из update ---
-    # Это важно для логирования, так как admin_id должен быть ID из таблицы employees, а не telegram_id
     admin_telegram_id = update.effective_user.id
     admin_employee = await db_manager.get_employee_by_telegram_id(admin_telegram_id)
-    admin_id_for_log = admin_employee['id'] if admin_employee else None # На случай, если админа нет в базе
+    admin_id_for_log = admin_employee['id'] if admin_employee else None
 
     try:
-        # Получаем старое значение для лога
+        # Получаем старое значение
         employee = await db_manager.get_employee_by_id(employee_id)
         old_value = employee.get(field)
 
-        # Обновляем поле в основной таблице
+        # Обновляем поле
         await db_manager.update_employee_field(employee_id, field, new_value)
+        
+        # --- СИНХРОНИЗАЦИЯ FULL_NAME ---
+        # Если изменили часть имени, нужно пересобрать full_name в БД
+        if field in ['last_name', 'first_name', 'middle_name']:
+            await db_manager.sync_employee_full_name(employee_id)
 
-        # Записываем в лог аудита
+        # Лог аудита
         await db_manager.log_employee_change(admin_id_for_log, employee_id, field, old_value, new_value, reason)
 
-        await update.message.reply_text(f"✅ Поле '{EDITABLE_FIELDS[field]}' успешно обновлено. Изменение залогировано.")
+        await update.message.reply_text(f"✅ Поле '{EDITABLE_FIELDS.get(field, field)}' успешно обновлено.")
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка при сохранении и логировании: {e}")
-        logger.error(f"Error saving and logging employee data change: {e}")
+        logger.error(f"Edit error: {e}")
+        await update.message.reply_text(f"❌ Ошибка при сохранении: {e}")
 
-    # --- ГЛАВНОЕ ИСПРАВЛЕНИЕ ---
-    # Убираем Mock-объекты и просто вызываем следующую функцию с текущим update
     return await start_edit_data(update, context)
 
 # --- ЛОГИКА ИЗМЕНЕНИЯ ГРАФИКА ---
@@ -1165,7 +1194,9 @@ admin_conv = ConversationHandler(
         ],
         
         # === ПОТОК: Добавление сотрудника ===
-        ADD_FULL_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_full_name)],
+        ADD_LAST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_last_name)],
+        ADD_FIRST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_first_name)],
+        ADD_MIDDLE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_middle_name)],
         ADD_POSITION: [CallbackQueryHandler(get_position, pattern='^pos_')],
         AWAITING_CONTACT: [MessageHandler(filters.CONTACT, get_contact), MessageHandler(filters.TEXT, wrong_input_in_contact_step)],
         ADD_SCHEDULE_PATTERN: [CallbackQueryHandler(get_schedule_pattern, pattern='^sched_')],

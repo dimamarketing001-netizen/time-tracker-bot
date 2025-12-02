@@ -273,7 +273,8 @@ async def get_schedule_anchor(update: Update, context: ContextTypes.DEFAULT_TYPE
     date_text = update.message.text.strip()
     import re
     if not re.match(r'^\d{4}-\d{2}-\d{2}$', date_text):
-        await update.message.reply_text("❌ Неверный формат. Введите дату в формате ГГГГ-ММ-ДД (например, 2023-10-25) или нажмите '❌ Отмена'.")
+        await update.message.reply_text("❌ Неверный формат даты. Пожалуйста, введите дату в формате *ГГГГ-ММ-ДД* (например, *2024-01-31*) или нажмите '❌ Отмена'.", parse_mode='Markdown')
+
         return ADD_SCHEDULE_ANCHOR
         
     context.user_data['new_employee']['schedule_start_date'] = date_text
@@ -351,8 +352,7 @@ async def get_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def get_start_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['new_employee']['default_start_time'] = update.message.text
     
-    reply_keyboard = [["18:00", "21:00", "23:00"]]
-
+    reply_keyboard = [["18:00", "20:00", "21:00", "22:00", "23:00"]]
 
     await remove_reply_keyboard(update, context, "Время начала сохранено.")
     
@@ -382,9 +382,9 @@ async def show_add_employee_menu(update: Update, context: ContextTypes.DEFAULT_T
     text = "\n".join(text_parts) + "\n\nВыберите дальнейшее действие."
     reply_markup = InlineKeyboardMarkup(keyboard)
     if update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
     else:
-        await update.message.reply_text(text, reply_markup=reply_markup)
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
     return ADD_EMPLOYEE_MENU
 
 async def select_field_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -777,7 +777,8 @@ async def request_edit_data_value(update: Update, context: ContextTypes.DEFAULT_
     await query.edit_message_text(f"Редактирование поля: {EDITABLE_FIELDS.get(field, field)}", reply_markup=InlineKeyboardMarkup([]))
     await query.message.reply_text(
         message_text,
-        reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
+        reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True),
+        parse_mode='Markdown'
     )
 
     return EDIT_DATA_GET_VALUE
@@ -792,7 +793,8 @@ async def get_edited_data_value(update: Update, context: ContextTypes.DEFAULT_TY
         import re
         if not re.match(r'^\d{4}-\d{2}-\d{2}$', value):
             await update.message.reply_text(
-                "❌ Неверный формат даты. Пожалуйста, введите дату в формате ГГГГ-ММ-ДД (например, 2024-01-31) или нажмите '❌ Отмена'."
+                "❌ Неверный формат даты. Пожалуйста, введите дату в формате *ГГГГ-ММ-ДД* (например, *2024-01-31*) или нажмите '❌ Отмена'.",
+                parse_mode='Markdown'
             )
             return EDIT_DATA_GET_VALUE
 
@@ -800,7 +802,8 @@ async def get_edited_data_value(update: Update, context: ContextTypes.DEFAULT_TY
     if field in unique_fields:
         existing_employee = await db_manager.find_employee_by_field(field, value)
         if existing_employee and existing_employee['id'] != employee_id:
-            await update.message.reply_text(f"❌ **Дубликат!** Такой номер уже есть в базе у сотрудника {existing_employee['full_name']}.\nВведите другое значение или нажмите '❌ Отмена'.")
+            await update.message.reply_text(f"❌ *Дубликат!* Такой номер уже есть в базе у сотрудника {existing_employee['full_name']}.\nВведите другое значение или нажмите '❌ Отмена'.",
+                parse_mode='Markdown')
             return EDIT_DATA_GET_VALUE
     
     context.user_data['new_field_value'] = value
@@ -808,8 +811,9 @@ async def get_edited_data_value(update: Update, context: ContextTypes.DEFAULT_TY
     cancel_kb = ReplyKeyboardMarkup([["❌ Отмена"]], resize_keyboard=True)
     
     await update.message.reply_text(
-        "Значение принято. Теперь введите краткую причину изменения (например, 'Ошибка при вводе').",
-        reply_markup=cancel_kb
+        "Значение принято. Теперь введите *краткую причину* изменения (например, 'Ошибка при вводе').",
+        reply_markup=cancel_kb,
+        parse_mode='Markdown'
     )
     
     return EDIT_DATA_GET_REASON

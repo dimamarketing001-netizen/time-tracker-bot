@@ -171,9 +171,7 @@ async def start_add_employee(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data['new_employee'] = {}
     cancel_kb = ReplyKeyboardMarkup([[KeyboardButton("❌ Отмена")]], resize_keyboard=True)
     
-    await query.message.reply_text("Начинаем добавление нового сотрудника.\nВведите **Фамилию** (или нажмите '❌ Отмена' для выхода):", 
-                                   reply_markup=cancel_kb, 
-                                   parse_mode='Markdown')
+    await query.message.reply_text("Начинаем добавление нового сотрудника.\nВведите **Фамилию** (или нажмите '❌ Отмена' для выхода):", reply_markup=cancel_kb, parse_mode='Markdown')
     return ADD_LAST_NAME
 
 async def get_last_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:

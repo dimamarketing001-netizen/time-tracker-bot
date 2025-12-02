@@ -334,7 +334,8 @@ async def get_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await query.answer()
     context.user_data['new_employee']['role'] = query.data.split('_', 1)[1]
     
-    reply_keyboard = [["09:00", "11:00", "13:00"]]
+    reply_keyboard = [["09:00", "10:00", "11:00", "12:00", "13:00"]]
+
     await query.edit_message_text(
         "Роль установлена. Выберите или введите стандартное время начала работы:",
         reply_markup=InlineKeyboardMarkup([]) # Убираем старые инлайн-кнопки
@@ -351,6 +352,8 @@ async def get_start_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data['new_employee']['default_start_time'] = update.message.text
     
     reply_keyboard = [["18:00", "21:00", "23:00"]]
+
+
     await remove_reply_keyboard(update, context, "Время начала сохранено.")
     
     await update.message.reply_text(
@@ -402,9 +405,9 @@ async def request_field_value(update: Update, context: ContextTypes.DEFAULT_TYPE
     message_text = f"Введите новое значение для поля '{EDITABLE_FIELDS[field]}':"
 
     if field == 'default_start_time':
-        reply_keyboard = [["09:00", "11:00", "13:00"]]
+        reply_keyboard = [["09:00", "10:00", "11:00", "12:00", "13:00"]]
     elif field == 'default_end_time':
-        reply_keyboard = [["18:00", "21:00", "23:00"]]
+        reply_keyboard = [["18:00", "20:00", "21:00", "22:00", "23:00"]]
         
     await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup([]))
     if reply_keyboard:
@@ -754,9 +757,15 @@ async def request_edit_data_value(update: Update, context: ContextTypes.DEFAULT_
     field = query.data.split('_', 3)[3]
     context.user_data['current_edit_field'] = field
     context.user_data['admin_menu_message_id'] = query.message.message_id
-    
+
     reply_keyboard = None
-    message_text = f"Введите новое значение для поля '{EDITABLE_FIELDS.get(field, field)}'\n(или нажмите '❌ Отмена'):"
+    field_name = EDITABLE_FIELDS.get(field, field)
+    message_text = f"Введите новое значение для поля '{field_name}'"
+
+    if 'date' in field:
+        message_text += " в формате ГГГГ-ММ-ДД (например, 2025-12-31)"
+        
+    message_text += "\n(или нажмите '❌ Отмена'):"
 
     if field == 'default_start_time':
         reply_keyboard = [["09:00", "10:00", "11:00", "12:00", "13:00"], ["❌ Отмена"]]
@@ -776,14 +785,22 @@ async def request_edit_data_value(update: Update, context: ContextTypes.DEFAULT_
 async def get_edited_data_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Получает новое значение и запрашивает причину изменения."""
     field = context.user_data['current_edit_field']
-    value = update.message.text
+    value = update.message.text.strip()
     employee_id = context.user_data['employee_to_edit_id']
-    
+
+    if 'date' in field:
+        import re
+        if not re.match(r'^\d{4}-\d{2}-\d{2}$', value):
+            await update.message.reply_text(
+                "❌ Неверный формат даты. Пожалуйста, введите дату в формате ГГГГ-ММ-ДД (например, 2024-01-31) или нажмите '❌ Отмена'."
+            )
+            return EDIT_DATA_GET_VALUE
+
     unique_fields = ['personal_phone', 'work_phone']
     if field in unique_fields:
         existing_employee = await db_manager.find_employee_by_field(field, value)
         if existing_employee and existing_employee['id'] != employee_id:
-            await update.message.reply_text(f"❌ **Дубликат!** Такой номер уже есть в базе.\nВведите другое значение или нажмите '❌ Отмена'.")
+            await update.message.reply_text(f"❌ **Дубликат!** Такой номер уже есть в базе у сотрудника {existing_employee['full_name']}.\nВведите другое значение или нажмите '❌ Отмена'.")
             return EDIT_DATA_GET_VALUE
     
     context.user_data['new_field_value'] = value
@@ -791,7 +808,7 @@ async def get_edited_data_value(update: Update, context: ContextTypes.DEFAULT_TY
     cancel_kb = ReplyKeyboardMarkup([["❌ Отмена"]], resize_keyboard=True)
     
     await update.message.reply_text(
-        "Значение принято. Теперь введите краткую причину изменения (например, 'Сотрудник сменил номер').",
+        "Значение принято. Теперь введите краткую причину изменения (например, 'Ошибка при вводе').",
         reply_markup=cancel_kb
     )
     
@@ -1056,7 +1073,8 @@ async def schedule_process_type(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data['schedule_change_type'] = change_type
     
     if change_type == 'WORK_TIME':
-        reply_keyboard = [["09:00", "10:00", "11:00"]]
+        reply_keyboard = [["09:00", "10:00", "11:00", "12:00", "13:00"]]
+
         await query.edit_message_text(
             "Выберите или введите новое ВРЕМЯ НАЧАЛА работы (в формате ЧЧ:ММ):",
             reply_markup=InlineKeyboardMarkup([])

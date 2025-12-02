@@ -2,9 +2,20 @@ import io
 import pyotp
 import qrcode
 from functools import wraps
-from telegram import Update
+from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import ContextTypes
 import db_manager as db_manager
+
+def get_main_keyboard(role: str) -> ReplyKeyboardMarkup:
+    """Генерирует главную клавиатуру в зависимости от роли."""
+    keyboard = [
+        [KeyboardButton("🟢 Начать смену"), KeyboardButton("🔴 Закончить смену")],
+        [KeyboardButton("📊 Отчет")]
+    ]
+    if role in ['admin', 'security']:
+        keyboard.append([KeyboardButton("🔐 Админка")])
+    
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def generate_totp_qr_code(uri: str) -> io.BytesIO:
     """Генерирует QR-код в виде байтового потока."""

@@ -6,8 +6,11 @@ from .auth_handlers import VERIFY_2FA_SETUP_CODE, AWAITING_ACTION_TOTP, start_2f
 import db_manager, config
 import json
 from config import REDIS_OPERATORS_ONLINE_SET, REDIS_OPERATOR_TASK_PREFIX
+from utils import generate_totp_qr_code, verify_totp, get_main_keyboard
 
 logger = logging.getLogger(__name__)
+
+VERIFY_2FA_SETUP_CODE, AWAITING_ACTION_TOTP = range(2)
 
 def format_deal_info(deal: dict) -> str:
     """Форматирует информацию о сделке для вывода пользователю с экранированием для MarkdownV2."""
@@ -56,9 +59,11 @@ async def clock_in(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         context.user_data['original_callback'] = clock_in
         context.user_data['original_update'] = update
         return await start_2fa_setup(update, context)
+    
     if employee['status'] == 'online':
-        await update.message.reply_text("Вы уже на линии.")
+        await update.message.reply_text("Вы уже на линии.", reply_markup=get_main_keyboard(employee.get('role', 'employee')))
         return ConversationHandler.END
+    
     if not await db_manager.has_clocked_in_today(employee['id']):
         context.user_data['pending_action'] = {'type': 'clock_in'}
         await update.message.reply_text("Это ваш первый вход сегодня. Пожалуйста, введите код 2FA для подтверждения.")
@@ -231,11 +236,13 @@ async def operator_clock_in(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return ConversationHandler.END
 
     try:
-        # SADD возвращает 1, если элемент был добавлен, и 0, если он уже был в множестве.
+        employee = await db_manager.get_employee_by_telegram_id(update.effective_user.id)
+        role = employee.get('role', 'employee')
+
         if redis_client.sadd(REDIS_OPERATORS_ONLINE_SET, user_id):
-            await update.message.reply_text("✅ Вы успешно вышли на линию. Ожидайте задачи.")
+            await update.message.reply_text("✅ Вы успешно вышли на линию. Ожидайте задачи.", reply_markup=get_main_keyboard(role))
         else:
-            await update.message.reply_text("ℹ️ Вы уже находитесь на линии.")
+            await update.message.reply_text("ℹ️ Вы уже находитесь на линии.", reply_markup=get_main_keyboard(role))
     except Exception as e:
         logger.error(f"Redis error in operator_clock_in for user {user_id}: {e}")
         await update.message.reply_text("❌ Ошибка Redis. Не удалось выйти на линию.")
@@ -276,10 +283,14 @@ async def operator_clock_out(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         # Если активной задачи нет, убираем с линии
         # SREM возвращает 1, если элемент был удален, и 0, если его не было.
+
+        employee = await db_manager.get_employee_by_telegram_id(update.effective_user.id)
+        role = employee.get('role', 'employee')
+        
         if redis_client.srem(REDIS_OPERATORS_ONLINE_SET, user_id):
-            await update.message.reply_text("☑️ Вы ушли с линии.")
+            await update.message.reply_text("☑️ Вы ушли с линии.", reply_markup=get_main_keyboard(role))
         else:
-            await update.message.reply_text("ℹ️ Вас не было на линии.")
+            await update.message.reply_text("ℹ️ Вас не было на линии.", reply_markup=get_main_keyboard(role))
 
     except Exception as e:
         logger.error(f"Redis error in operator_clock_out for user {user_id}: {e}")

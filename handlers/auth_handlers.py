@@ -10,7 +10,7 @@ from telegram.ext import (
 import logging
 import db_manager
 import config
-from utils import generate_totp_qr_code, verify_totp
+from utils import generate_totp_qr_code, verify_totp, get_main_keyboard
 
 logger = logging.getLogger(__name__)
 
@@ -41,31 +41,33 @@ async def start_2fa_setup(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
     return VERIFY_2FA_SETUP_CODE
 
-
 async def verify_2fa_setup_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     code = update.message.text.strip()
     secret = context.user_data.get('temp_totp_secret')
 
+    user_id = update.effective_user.id
+    employee = await db_manager.get_employee_by_telegram_id(user_id)
+    role = employee.get('role', 'employee') if employee else 'employee'
+
     if not secret:
-        await update.message.reply_text("Произошла ошибка. Попробуйте начать сначала.")
+        await update.message.reply_text("Произошла ошибка. Попробуйте начать сначала.", reply_markup=get_main_keyboard(role))
         return ConversationHandler.END
 
     if verify_totp(secret, code):
-        user_id = update.effective_user.id
-        employee = await db_manager.get_employee_by_telegram_id(user_id)
         await db_manager.set_totp_secret(employee['id'], secret)
         
         await update.message.reply_text("✅ Двухфакторная аутентификация успешно настроена!")
         
         original_update = context.user_data.pop('original_update', None)
         
-        if original_update and original_update.message and original_update.message.text == '/on':
+        # Если это было первоначальное действие, выполняем его и возвращаем клавиатуру
+        if original_update and original_update.message and (original_update.message.text == '/on' or "Начать смену" in original_update.message.text):
             await update.message.reply_text("Выполняю ваш первоначальный вход в линию...")
             await db_manager.update_employee_status(employee['id'], 'online')
             await db_manager.log_time_event(employee['id'], 'clock_in')
-            await update.message.reply_text("✅ Вы успешно вошли в линию. Продуктивного дня!")
+            await update.message.reply_text("✅ Вы успешно вошли в линию. Продуктивного дня!", reply_markup=get_main_keyboard(role))
         else:
-            await update.message.reply_text("Теперь, когда 2FA настроен, пожалуйста, повторите ваше действие.")
+            await update.message.reply_text("Теперь, когда 2FA настроен, пожалуйста, повторите ваше действие.", reply_markup=get_main_keyboard(role))
 
         context.user_data.clear()
         return ConversationHandler.END
@@ -105,7 +107,6 @@ async def verify_action_totp(update: Update, context: ContextTypes.DEFAULT_TYPE)
             }
             await update.message.reply_text(f"✅ {messages.get(reason, 'Статус обновлен.')}")
 
-        # --- ВОТ ИСПРАВЛЕНИЕ: ДОБАВЛЕН ЭТОТ БЛОК ---
         elif action_type == 'clock_in':
             await db_manager.update_employee_status(employee['id'], 'online')
             await db_manager.log_time_event(employee['id'], 'clock_in')
@@ -118,7 +119,13 @@ async def verify_action_totp(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Отменяет текущую операцию."""
+    """Отменяет текущую операцию и возвращает кнопки."""
     context.user_data.clear()
-    await update.message.reply_text("Операция отменена.")
+    
+
+    user_id = update.effective_user.id
+    employee = await db_manager.get_employee_by_telegram_id(user_id)
+    role = employee.get('role', 'employee') if employee else 'employee'
+    
+    await update.message.reply_text("Операция отменена.", reply_markup=get_main_keyboard(role))
     return ConversationHandler.END

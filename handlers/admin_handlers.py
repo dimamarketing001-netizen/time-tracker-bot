@@ -1,5 +1,5 @@
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ContextTypes,
     CommandHandler,
@@ -8,9 +8,8 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-from utils import security_required, verify_totp
+from utils import security_required, verify_totp, get_main_keyboard
 import db_manager as db_manager
-from .auth_handlers import cancel
 from telegram.helpers import escape_markdown
 import calendar_helper
 from datetime import date, timedelta
@@ -18,7 +17,7 @@ from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
 
 logger = logging.getLogger(__name__)
 
-BTN_ADMIN_TEXT = "🔐 Админка" 
+BTN_ADMIN_TEXT = "🔐 Админка"
 
 # --- Константы состояний ---
 # Главное меню
@@ -138,12 +137,26 @@ async def show_schedule_main_menu(update: Update, context: ContextTypes.DEFAULT_
     return SCHEDULE_MAIN_MENU
 # ========== ЛОГИКА ДОБАВЛЕНИЯ СОТРУДНИКА ==========
 
+async def admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отменяет админское действие и возвращает главное меню."""
+    context.user_data.clear()
+    user_id = update.effective_user.id
+    employee = await db_manager.get_employee_by_telegram_id(user_id)
+    role = employee.get('role', 'employee') if employee else 'employee'
+    
+    await update.message.reply_text("Действие отменено. Возврат в главное меню.", reply_markup=get_main_keyboard(role))
+    return ConversationHandler.END
+
 async def start_add_employee(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
     context.user_data['new_employee'] = {}
 
-    await query.edit_message_text("Начинаем добавление нового сотрудника.\n\nВведите **Фамилию**:", parse_mode='Markdown')
+    cancel_kb = ReplyKeyboardMarkup([[KeyboardButton("❌ Отмена")]], resize_keyboard=True)
+    
+    await query.message.reply_text("Начинаем добавление нового сотрудника.\nВведите **Фамилию** (или нажмите '❌ Отмена' для выхода):", 
+                                   reply_markup=cancel_kb, 
+                                   parse_mode='Markdown')
     return ADD_LAST_NAME
 
 async def get_last_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -363,23 +376,25 @@ async def confirm_add_employee(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def finalize_add_employee(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     admin_employee = await db_manager.get_employee_by_telegram_id(update.effective_user.id)
+    role = admin_employee.get('role', 'admin')
+
     if admin_employee and admin_employee.get('totp_secret') and verify_totp(admin_employee['totp_secret'], update.message.text):
         employee_data = context.user_data['new_employee']
 
         l = employee_data.get('last_name', '')
         f = employee_data.get('first_name', '')
         m = employee_data.get('middle_name', '')
-        # Убираем лишние пробелы, если отчества нет
+
         full_name = f"{l} {f} {m}".strip()
         employee_data['full_name'] = full_name
 
         try:
             await db_manager.add_employee(employee_data)
-            await update.message.reply_text(f"✅ Сотрудник {full_name} успешно добавлен!")
+            await update.message.reply_text(f"✅ Сотрудник {full_name} успешно добавлен!", reply_markup=get_main_keyboard(role))
         except Exception as e:
             await update.message.reply_text(f"❌ Произошла ошибка при добавлении в базу данных: {e}")
     else:
-        await update.message.reply_text("❌ Неверный код 2FA. Операция отменена.")
+        await update.message.reply_text("❌ Неверный код 2FA. Операция отменена.", reply_markup=get_main_keyboard(role))
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -1378,6 +1393,7 @@ async def start_fire_employee(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def finalize_fire_employee(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # Проверка 2FA админа
     admin_employee = await db_manager.get_employee_by_telegram_id(update.effective_user.id)
+    role = admin_employee.get('role', 'admin')
     code = update.message.text.strip()
     
     if admin_employee and admin_employee.get('totp_secret') and verify_totp(admin_employee['totp_secret'], code):
@@ -1386,7 +1402,7 @@ async def finalize_fire_employee(update: Update, context: ContextTypes.DEFAULT_T
         
         try:
             await db_manager.fire_employee(employee_id)
-            await update.message.reply_text(f"✅ Сотрудник *{target_employee['full_name']}* успешно уволен.", parse_mode='Markdown')
+            await update.message.reply_text(f"✅ Сотрудник *{target_employee['full_name']}* успешно уволен.", parse_mode='Markdown', reply_markup=get_main_keyboard(role))
             # Логируем действие
             await db_manager.log_employee_change(
                 admin_id=admin_employee['id'], 
@@ -1397,12 +1413,12 @@ async def finalize_fire_employee(update: Update, context: ContextTypes.DEFAULT_T
                 reason="Admin panel fire action"
             )
         except Exception as e:
-            await update.message.reply_text(f"❌ Ошибка при увольнении: {e}")
+            await update.message.reply_text(f"❌ Ошибка при увольнении: {e}", reply_markup=get_main_keyboard(role))
             
         context.user_data.clear()
         return ConversationHandler.END
     else:
-        await update.message.reply_text("❌ Неверный код 2FA. Попробуйте снова или нажмите /cancel.")
+        await update.message.reply_text("❌ Неверный код 2FA. Попробуйте снова", reply_markup=get_main_keyboard(role))
         return AWAITING_FIRE_EMPLOYEE_2FA
 
 # --- ЛОГИКА УДАЛЕНИЯ ---
@@ -1425,6 +1441,7 @@ async def start_delete_employee(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def finalize_delete_employee(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     admin_employee = await db_manager.get_employee_by_telegram_id(update.effective_user.id)
+    role = admin_employee.get('role', 'admin')
     code = update.message.text.strip()
     
     if admin_employee and admin_employee.get('totp_secret') and verify_totp(admin_employee['totp_secret'], code):
@@ -1433,14 +1450,14 @@ async def finalize_delete_employee(update: Update, context: ContextTypes.DEFAULT
         
         try:
             await db_manager.delete_employee_permanently(employee_id)
-            await update.message.reply_text(f"🗑 Сотрудник *{target_employee['full_name']}* был полностью удален из БД.", parse_mode='Markdown')
+            await update.message.reply_text(f"🗑 Сотрудник *{target_employee['full_name']}* был полностью удален из БД.", parse_mode='Markdown', reply_markup=get_main_keyboard(role))
         except Exception as e:
-            await update.message.reply_text(f"❌ Ошибка БД при удалении: {e}")
+            await update.message.reply_text(f"❌ Ошибка БД при удалении: {e}", reply_markup=get_main_keyboard(role))
             
         context.user_data.clear()
         return ConversationHandler.END
     else:
-        await update.message.reply_text("❌ Неверный код 2FA. Попробуйте снова или нажмите /cancel.")
+        await update.message.reply_text("❌ Неверный код 2FA. Попробуйте снова.", reply_markup=get_main_keyboard(role))
         return AWAITING_DELETE_EMPLOYEE_2FA
     
 # ========== РЕГИСТРАЦИЯ ConversationHandler'ов ==========
@@ -1470,7 +1487,7 @@ admin_conv = ConversationHandler(
         ],
         
         # === ПОТОК: Добавление сотрудника ===
-        ADD_LAST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_last_name)],
+        ADD_LAST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_last_name)],
         ADD_FIRST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_first_name)],
         ADD_MIDDLE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_middle_name)],
         ADD_CITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_city)],
@@ -1563,7 +1580,10 @@ admin_conv = ConversationHandler(
         AWAITING_FIRE_EMPLOYEE_2FA: [MessageHandler(filters.Regex(r'^\d{6}$'), finalize_fire_employee)],
         AWAITING_DELETE_EMPLOYEE_2FA: [MessageHandler(filters.Regex(r'^\d{6}$'), finalize_delete_employee)],
     },
-    fallbacks=[CommandHandler('cancel', cancel)],
+    fallbacks=[
+        CommandHandler('cancel', admin_cancel),
+        MessageHandler(filters.Regex("^❌ Отмена$"), admin_cancel) 
+    ],
     per_user=True,
     allow_reentry=True
 )
@@ -1575,7 +1595,10 @@ sb_approval_handler = ConversationHandler(
     states={
         AWAITING_SB_2FA: [MessageHandler(filters.Regex(r'^\d{6}$'), sb_approval_2fa)]
     },
-    fallbacks=[CommandHandler('cancel', cancel)],
+    fallbacks=[
+        CommandHandler('cancel', admin_cancel),
+        MessageHandler(filters.Regex("^❌ Отмена$"), admin_cancel) 
+    ],
     per_user=True,
 )
 

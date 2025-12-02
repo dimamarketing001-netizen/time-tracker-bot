@@ -18,6 +18,7 @@ import json
 import redis
 from config import BOT_TOKEN, REDIS_HOST, REDIS_PORT
 from handlers import user_handlers, admin_handlers, auth_handlers
+from utils import get_main_keyboard 
 
 # Настройка логирования для отладки
 logging.basicConfig(
@@ -35,7 +36,6 @@ BTN_REPORT = "📊 Отчет"
 BTN_ADMIN = "🔐 Админка"
 
 async def post_init(application: Application):
-    """Инициализация при запуске."""
     try:
         redis_op_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
         redis_op_client.ping()
@@ -55,44 +55,26 @@ async def post_shutdown(application: Application):
     await db_manager.close_pool()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Обрабатывает команду /start.
-    Проверяет роль пользователя и выдает соответствующую клавиатуру.
-    """
     user_id = update.effective_user.id
     employee = await db_manager.get_employee_by_telegram_id(user_id)
+    role = employee.get('role', '').lower() if employee else 'unknown'
     
-    # Базовые кнопки для всех
-    keyboard = [
-        [KeyboardButton(BTN_START_SHIFT), KeyboardButton(BTN_END_SHIFT)],
-        [KeyboardButton(BTN_REPORT)]
-    ]
-
-    # Добавляем кнопку админки, если есть права
-    if employee and employee.get('role', '').lower() in ['admin', 'security']:
-        keyboard.append([KeyboardButton(BTN_ADMIN)])
-
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    # Используем функцию из utils для получения клавиатуры
+    reply_markup = get_main_keyboard(role)
 
     await update.message.reply_text(
         "Добро пожаловать в систему учета рабочего времени!\n"
         "Используйте кнопки меню для управления статусом.",
         reply_markup=reply_markup
     )
-
+    
 def main() -> None:
-    """Основная функция для запуска бота."""
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # --- Регистрация обработчиков ---
-
     # 1. Админские хендлеры
-    # Мы добавляем все обработчики, определенные в admin_handlers, включая ConversationHandler'ы
     application.add_handlers(admin_handlers.admin_handlers)
 
-    # 2. Обработчик для команды /on (в виде диалога)
-    # Это позволяет боту запомнить, что он ждет TOTP-код именно для входа,
-    # а не для чего-то другого.
+    # 2. Вход на смену
     on_handler = ConversationHandler(
         entry_points=[
             CommandHandler("on", user_handlers.clock_in),
@@ -108,10 +90,11 @@ def main() -> None:
         },
         fallbacks=[CommandHandler('cancel', auth_handlers.cancel)],
         per_user=True,
+        allow_reentry=True # ВАЖНО: Позволяет перезапустить команду, если завис
     )
     application.add_handler(on_handler)
 
-    # 3. Обработчик для команды /off (также в виде диалога)
+    # 3. Выход со смены
     off_handler = ConversationHandler(
         entry_points=[
             CommandHandler("off", user_handlers.clock_out_menu),
@@ -131,13 +114,12 @@ def main() -> None:
         },
         fallbacks=[CommandHandler('cancel', auth_handlers.cancel)],
         per_user=True,
+        allow_reentry=True # ВАЖНО: Позволяет перезапустить команду, если завис
     )
     application.add_handler(off_handler)
 
-    # 4. Простая команда /start
+    # 4. Прочие команды
     application.add_handler(CommandHandler("start", start))
-
-    # Обработчик кнопки "📊 Отчет" и команды /report
     application.add_handler(CommandHandler("report", user_handlers.generate_report_placeholder))
     application.add_handler(MessageHandler(filters.Regex(f"^{BTN_REPORT}$"), user_handlers.generate_report_placeholder))
 
@@ -146,7 +128,6 @@ def main() -> None:
 
     logger.info("Bot is starting...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
-
 
 if __name__ == "__main__":
     main()

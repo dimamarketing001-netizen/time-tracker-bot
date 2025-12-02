@@ -373,16 +373,47 @@ async def show_add_employee_menu(update: Update, context: ContextTypes.DEFAULT_T
         [InlineKeyboardButton("✅ Завершить и добавить", callback_data='action_confirm')],
     ]
     employee_data = context.user_data['new_employee']
+    
+    # Заголовок жирным
     text_parts = ["*Данные для добавления:*\n"]
+    
     for key, value in employee_data.items():
+        # Получаем красивое название поля
         field_name = EDITABLE_FIELDS.get(key, key.replace('_', ' ').capitalize())
-        text_parts.append(f"{field_name}: {value}")
+        
+        # Экранируем значение, чтобы спецсимволы (например _ в нике или * в имени) не ломали Markdown
+        # Если value None, превращаем в пустую строку или '-'
+        val_str = str(value) if value is not None else "-"
+        safe_value = escape_markdown(val_str, version=1)
+        
+        text_parts.append(f"{field_name}: {safe_value}")
+        
     text = "\n".join(text_parts) + "\n\nВыберите дальнейшее действие."
     reply_markup = InlineKeyboardMarkup(keyboard)
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
-    else:
-        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    
+    try:
+        if update.callback_query:
+            await update.callback_query.edit_message_text(
+                text, 
+                reply_markup=reply_markup, 
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                text, 
+                reply_markup=reply_markup, 
+                parse_mode='Markdown'
+            )
+            
+    except Exception as e:
+        logger.error(f"Error sending add employee menu: {e}")
+        # Если вдруг Markdown все равно сломался, отправляем без него
+        text_no_md = text.replace('*', '')
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text_no_md, reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(text_no_md, reply_markup=reply_markup)
+
     return ADD_EMPLOYEE_MENU
 
 async def select_field_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:

@@ -678,21 +678,21 @@ async def request_edit_data_value(update: Update, context: ContextTypes.DEFAULT_
     context.user_data['current_edit_field'] = field
     
     reply_keyboard = None
-    message_text = f"Введите новое значение для поля '{EDITABLE_FIELDS[field]}':"
+    message_text = f"Введите новое значение для поля '{EDITABLE_FIELDS.get(field, field)}'\n(или нажмите '❌ Отмена'):"
 
     if field == 'default_start_time':
-        reply_keyboard = [["09:00", "11:00", "13:00"]]
+        reply_keyboard = [["09:00", "10:00", "11:00", "12:00", "13:00"], ["❌ Отмена"]]
     elif field == 'default_end_time':
-        reply_keyboard = [["18:00", "21:00", "23:00"]]
-        
-    await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup([])) # Убираем инлайн-клавиатуру
-    if reply_keyboard:
-        # Отправляем обычную клавиатуру для выбора
-        await query.message.reply_text(
-            "Варианты:",
-            reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
-        )
-        
+        reply_keyboard = [["18:00", "20:00", "21:00", "22:00", "23:00"], ["❌ Отмена"]]
+    else:
+        reply_keyboard = [["❌ Отмена"]]
+
+    await query.edit_message_text(f"Редактирование поля: {EDITABLE_FIELDS.get(field, field)}", reply_markup=InlineKeyboardMarkup([]))
+    await query.message.reply_text(
+        message_text,
+        reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
+    )
+
     return EDIT_DATA_GET_VALUE
 
 async def get_edited_data_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -705,15 +705,16 @@ async def get_edited_data_value(update: Update, context: ContextTypes.DEFAULT_TY
     if field in unique_fields:
         existing_employee = await db_manager.find_employee_by_field(field, value)
         if existing_employee and existing_employee['id'] != employee_id:
-            await update.message.reply_text(f"❌ **Дубликат!** ...\nВведите другое.")
+            await update.message.reply_text(f"❌ **Дубликат!** Такой номер уже есть в базе.\nВведите другое значение или нажмите '❌ Отмена'.")
             return EDIT_DATA_GET_VALUE
     
     context.user_data['new_field_value'] = value
     
-    # Убираем клавиатуру с вариантами времени перед запросом причины
+    cancel_kb = ReplyKeyboardMarkup([["❌ Отмена"]], resize_keyboard=True)
+    
     await update.message.reply_text(
         "Значение принято. Теперь введите краткую причину изменения (например, 'Сотрудник сменил номер').",
-        reply_markup=ReplyKeyboardRemove()
+        reply_markup=cancel_kb
     )
     
     return EDIT_DATA_GET_REASON
@@ -742,13 +743,12 @@ async def save_data_with_reason(update: Update, context: ContextTypes.DEFAULT_TY
         if field in ['last_name', 'first_name', 'middle_name']:
             await db_manager.sync_employee_full_name(employee_id)
 
-        # Лог аудита
         await db_manager.log_employee_change(admin_id_for_log, employee_id, field, old_value, new_value, reason)
 
-        await update.message.reply_text(f"✅ Поле '{EDITABLE_FIELDS.get(field, field)}' успешно обновлено.")
+        await update.message.reply_text(f"✅ Поле '{EDITABLE_FIELDS.get(field, field)}' успешно обновлено.", reply_markup=ReplyKeyboardRemove())
     except Exception as e:
         logger.error(f"Edit error: {e}")
-        await update.message.reply_text(f"❌ Ошибка при сохранении: {e}")
+        await update.message.reply_text(f"❌ Ошибка при сохранении: {e}", reply_markup=ReplyKeyboardRemove())
 
     return await start_edit_data(update, context)
 

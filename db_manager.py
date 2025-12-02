@@ -178,6 +178,7 @@ async def update_employee_field(employee_id: int, field: str, value: Any):
         'city',
         'role', 
         'schedule_pattern', 
+        'schedule_start_date',
         'default_start_time', 
         'default_end_time',
         'passport_data', 
@@ -281,53 +282,77 @@ async def set_schedule_override_for_period(employee_id: int, start_date_str: str
 
 async def get_employee_schedule_for_period(employee_id: int, start_date: date, end_date: date) -> List[Dict[str, Any]]:
     """
-    Собирает полный график сотрудника на заданный период,
-    учитывая базовый график (5/2, 2/2 и т.д.) и все исключения.
+    Собирает полный график сотрудника на заданный период.
     """
     employee = await get_employee_by_id(employee_id)
     if not employee:
         return []
 
-    # 1. Получаем все исключения для этого сотрудника в заданном диапазоне
+    # 1. Получаем исключения
     query = "SELECT * FROM schedule_overrides WHERE employee_id = %s AND work_date BETWEEN %s AND %s"
     overrides_list = await fetch_all(query, (employee_id, start_date, end_date))
     overrides = {ov['work_date'].isoformat(): ov for ov in overrides_list}
 
-    # 2. Определяем рабочие и выходные дни по-умолчанию
+    # 2. Параметры графика
     schedule_pattern = employee.get('schedule_pattern', '5/2')
-    work_days, off_days = map(int, schedule_pattern.split('/'))
     
-    # 0 = Понедельник, 6 = Воскресенье
-    if schedule_pattern == '5/2':
-        default_weekend_days = [5, 6] # СБ, ВС
-    elif schedule_pattern == '6/1':
-        default_weekend_days = [6] # ВС
-    elif schedule_pattern == '7/0':
-        default_weekend_days = [] # Нет выходных
-    # График 2/2 требует более сложной логики с точкой отсчета, для простоты реализуем его как 5/2
-    else: # 2/2 и другие
-        default_weekend_days = [5, 6] 
+    # Для 2/2 берем schedule_start_date (или hire_date как запасной вариант)
+    anchor_date = employee.get('schedule_start_date')
+    if not anchor_date:
+        # Если не задано, пробуем дату найма, иначе просто старт просмотра (будет неточно, но не упадет)
+        hire = employee.get('hire_date')
+        if isinstance(hire, str): hire = date.fromisoformat(hire)
+        anchor_date = hire if hire else start_date
+    elif isinstance(anchor_date, str):
+        anchor_date = date.fromisoformat(anchor_date)
 
     final_schedule = []
     current_date = start_date
+    
     while current_date <= end_date:
         day_info = {'date': current_date}
         date_str = current_date.isoformat()
+        
+        is_default_weekend = False
+        
+        # --- ЛОГИКА ГРАФИКОВ ---
+        if schedule_pattern == '2/2':
+            # Считаем разницу дней от даты начала цикла
+            days_diff = (current_date - anchor_date).days
+            # Если дата в прошлом относительно якоря, считаем математически правильно в обратную сторону
+            cycle_day = days_diff % 4 
+            # 0 и 1 = Смена 1, Смена 2 (РАБОТА)
+            # 2 и 3 = Выходной 1, Выходной 2 (ОТДЫХ)
+            if cycle_day >= 2:
+                is_default_weekend = True
+                
+        elif schedule_pattern == '6/1':
+            # Пн-Сб работа, Вс (6) выходной
+            if current_date.weekday() == 6:
+                is_default_weekend = True
+                
+        elif schedule_pattern == '7/0':
+            # Без выходных
+            is_default_weekend = False
+            
+        else: # 5/2 (или любой другой)
+            # Сб(5), Вс(6) выходные
+            if current_date.weekday() in [5, 6]:
+                is_default_weekend = True
 
-        # 3. Проверяем, есть ли исключение для этого дня
+        # 3. Применяем исключения или базовый график
         if date_str in overrides:
             override = overrides[date_str]
             if override['is_day_off']:
                 day_info['status'] = 'Отгул/Больничный'
                 day_info['start_time'] = None
                 day_info['end_time'] = None
-            else: # Рабочий день с измененным временем
+            else:
                 day_info['status'] = 'Работа'
                 day_info['start_time'] = override['start_time']
                 day_info['end_time'] = override['end_time']
         else:
-            # 4. Если исключения нет, применяем базовый график
-            if current_date.weekday() in default_weekend_days:
+            if is_default_weekend:
                 day_info['status'] = 'Выходной'
                 day_info['start_time'] = None
                 day_info['end_time'] = None
@@ -340,8 +365,6 @@ async def get_employee_schedule_for_period(employee_id: int, start_date: date, e
         current_date += timedelta(days=1)
         
     return final_schedule
-
-# Файл: db_manager.py
 
 async def get_all_schedule_overrides_for_period(start_date: date, end_date: date) -> List[Dict[str, Any]]:
     """

@@ -30,7 +30,7 @@ ADMIN_MAIN_MENU = 0
     SCHEDULE_MAIN_MENU,          # 2
 
     # Поток добавления сотрудника
-    ADD_LAST_NAME, ADD_FIRST_NAME, ADD_MIDDLE_NAME, ADD_CITY, ADD_PHONE, ADD_POSITION, AWAITING_CONTACT, ADD_SCHEDULE_PATTERN, ADD_ROLE,
+    ADD_LAST_NAME, ADD_FIRST_NAME, ADD_MIDDLE_NAME, ADD_CITY, ADD_PHONE, ADD_POSITION, AWAITING_CONTACT, ADD_SCHEDULE_PATTERN, ADD_SCHEDULE_ANCHOR, ADD_ROLE,
     ADD_START_TIME, ADD_END_TIME, ADD_EMPLOYEE_MENU, SELECT_FIELD, GET_FIELD_VALUE,
     AWAITING_ADD_EMPLOYEE_2FA,   # 3-13
 
@@ -60,7 +60,7 @@ ADMIN_MAIN_MENU = 0
 
     AWAITING_FIRE_EMPLOYEE_2FA,
     AWAITING_DELETE_EMPLOYEE_2FA,
-) = range(50)
+) = range(51)
 
 
 # ========== СЛОВАРИ И ВСПОМОГАТЕЛЬНЫЕ ДАННЫЕ ==========
@@ -72,6 +72,7 @@ EDITABLE_FIELDS = {
     'personal_phone': 'Личный телефон', 'work_phone': 'Рабочий телефон',
     'city': 'Город', 'role': 'Роль',
     'schedule_pattern': 'График работы (5/2, 2/2)',
+    'schedule_start_date': 'Дата первой смены (для 2/2)',
     'default_start_time': 'Начало работы (ЧЧ:ММ)', 'default_end_time': 'Конец работы (ЧЧ:ММ)',
     'passport_data': 'Паспорт (Серия и Номер)',
     'passport_issued_by': 'Кем выдан паспорт',
@@ -268,19 +269,66 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 async def wrong_input_in_contact_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Пожалуйста, не отправляйте текст. Мне нужен именно **контакт** сотрудника.\nНажмите на 📎 и выберите 'Контакт'.")
 
+async def get_schedule_anchor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    date_text = update.message.text.strip()
+    import re
+    if not re.match(r'^\d{4}-\d{2}-\d{2}$', date_text):
+        await update.message.reply_text("❌ Неверный формат. Введите дату в формате ГГГГ-ММ-ДД (например, 2023-10-25) или нажмите '❌ Отмена'.")
+        return ADD_SCHEDULE_ANCHOR
+        
+    context.user_data['new_employee']['schedule_start_date'] = date_text
+    
+    # Убираем клавиатуру отмены
+    await update.message.reply_text("Дата отсчета сохранена.", reply_markup=ReplyKeyboardRemove())
+    
+    # Переходим к выбору роли
+    return await ask_role_step(update, context)
+
 async def get_schedule_pattern(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
     pattern = query.data.split('_', 1)[1]
     context.user_data['new_employee']['schedule_pattern'] = pattern
+    
+    # Если выбрали 2/2, спрашиваем дату отсчета
+    if pattern == '2/2':
+        # Создаем кнопку отмены для следующего шага
+        cancel_kb = ReplyKeyboardMarkup([[KeyboardButton("❌ Отмена")]], resize_keyboard=True)
+        # Удаляем старое инлайн-меню, т.к. переходим к тексту
+        try:
+            await query.message.delete()
+        except:
+            pass
+            
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"Выбран график 2/2.\n\nВведите **Дату первой рабочей смены** (точку отсчета) в формате ГГГГ-ММ-ДД (например, {date.today()}):",
+            reply_markup=cancel_kb,
+            parse_mode='Markdown'
+        )
+        return ADD_SCHEDULE_ANCHOR
+    
+    # Для остальных графиков сразу идем к выбору роли
+    return await ask_role_step(update, context)
+
+async def ask_role_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Вспомогательная функция для показа выбора роли."""
     keyboard = [
         [InlineKeyboardButton("Admin", callback_data='role_Admin')],
         [InlineKeyboardButton("Security", callback_data='role_Security')],
         [InlineKeyboardButton("Employee", callback_data='role_Employee')],
     ]
-    await query.edit_message_text(f"График '{pattern}' установлен. Теперь выберите роль:", reply_markup=InlineKeyboardMarkup(keyboard))
-    return ADD_ROLE
+    # Если мы пришли из функции get_schedule_pattern (где был query), редактируем сообщение
+    # Если из get_schedule_anchor (где был текст), отправляем новое
+    if update.callback_query:
+        await update.callback_query.edit_message_text("График установлен. Выберите роль:", reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        # Сохраняем ID меню, чтобы потом удалить при отмене
+        msg = await update.message.reply_text("График установлен. Выберите роль:", reply_markup=InlineKeyboardMarkup(keyboard))
+        context.user_data['admin_menu_message_id'] = msg.message_id
     
+    return ADD_ROLE
+
 async def get_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -1570,6 +1618,7 @@ admin_conv = ConversationHandler(
         ADD_POSITION: [CallbackQueryHandler(get_position, pattern='^pos_')],
         AWAITING_CONTACT: [MessageHandler(filters.CONTACT, get_contact), MessageHandler(filters.TEXT & ~filters.Regex("^❌ Отмена$"), wrong_input_in_contact_step)],
         ADD_SCHEDULE_PATTERN: [CallbackQueryHandler(get_schedule_pattern, pattern='^sched_')],
+        ADD_SCHEDULE_ANCHOR: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_schedule_anchor)],
         ADD_ROLE: [CallbackQueryHandler(get_role, pattern='^role_')],
 
         ADD_START_TIME: [MessageHandler(filters.Regex(r'^\d{2}:\d{2}$'), get_start_time)],

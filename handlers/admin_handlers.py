@@ -669,28 +669,33 @@ async def get_rel_liv_address(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def start_edit_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    if query: await query.answer()
+    # Если вызов через callback (нажатие кнопки)
+    if query: 
+        await query.answer()
+        # Сохраняем ID текущего меню (для последующего удаления)
+        context.user_data['admin_menu_message_id'] = query.message.message_id
 
     employee_id = context.user_data['employee_to_edit_id']
     employee = await db_manager.get_employee_by_id(employee_id)
 
     buttons = []
     for field, name in EDITABLE_FIELDS.items():
-        # Исключаем старые поля relatives, если они остались в словаре
         if 'relative' not in field: 
             buttons.append([InlineKeyboardButton(name, callback_data=f"edit_data_field_{field}")])
     
     buttons.insert(0, [InlineKeyboardButton("👨‍👩‍👧 Управление родственниками", callback_data='manage_relatives')])
-
     buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data='back_to_edit_menu')])
 
     text = f"Редактирование данных: *{employee['full_name']}*\nВыберите поле:"
-    
     reply_markup = InlineKeyboardMarkup(buttons)
+
     if query:
         await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
     else:
-        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        # Если вызов после текстового сообщения (например, после успешного сохранения)
+        msg = await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        # ВАЖНО: Запоминаем ID этого нового сообщения меню!
+        context.user_data['admin_menu_message_id'] = msg.message_id
 
     return EDIT_DATA_SELECT_FIELD
 
@@ -754,29 +759,45 @@ async def save_data_with_reason(update: Update, context: ContextTypes.DEFAULT_TY
     admin_telegram_id = update.effective_user.id
     admin_employee = await db_manager.get_employee_by_telegram_id(admin_telegram_id)
     admin_id_for_log = admin_employee['id'] if admin_employee else None
+    role = admin_employee.get('role', 'employee') if admin_employee else 'employee'
 
     try:
+        # Получаем старое значение
         employee = await db_manager.get_employee_by_id(employee_id)
         old_value = employee.get(field)
 
+        # Обновляем поле
         await db_manager.update_employee_field(employee_id, field, new_value)
         
+        # --- СИНХРОНИЗАЦИЯ FULL_NAME ---
         if field in ['last_name', 'first_name', 'middle_name']:
             await db_manager.sync_employee_full_name(employee_id)
 
+        # Лог аудита
         await db_manager.log_employee_change(admin_id_for_log, employee_id, field, old_value, new_value, reason)
 
-        await update.message.reply_text(f"✅ Поле '{EDITABLE_FIELDS.get(field, field)}' успешно обновлено.", reply_markup=ReplyKeyboardRemove())
-        admin_msg_id = context.user_data.get('admin_menu_message_id')
-        if admin_msg_id:
+        # 1. Удаляем старое сообщение с меню (если оно есть), так как сейчас мы создадим новое
+        old_menu_id = context.user_data.get('admin_menu_message_id')
+        if old_menu_id:
             try:
-                await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=admin_msg_id)
+                await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=old_menu_id)
             except Exception:
                 pass
+
+        # 2. Успех: Отправляем сообщение и ВОССТАНАВЛИВАЕМ ГЛАВНУЮ КЛАВИАТУРУ
+        await update.message.reply_text(
+            f"✅ Поле '{EDITABLE_FIELDS.get(field, field)}' успешно обновлено.", 
+            reply_markup=get_main_keyboard(role)
+        )
+
     except Exception as e:
         logger.error(f"Edit error: {e}")
-        await update.message.reply_text(f"❌ Ошибка при сохранении: {e}", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text(
+            f"❌ Ошибка при сохранении: {e}", 
+            reply_markup=get_main_keyboard(role)
+        )
 
+    # Возвращаемся в меню редактирования (там появится новое инлайн-меню)
     return await start_edit_data(update, context)
 
 # --- ЛОГИКА ИЗМЕНЕНИЯ ГРАФИКА ---

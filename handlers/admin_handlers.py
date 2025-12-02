@@ -86,7 +86,6 @@ async def remove_reply_keyboard(update: Update, context: ContextTypes.DEFAULT_TY
     await update.message.reply_text(text, reply_markup=ReplyKeyboardRemove())
 
 # ========== ГЛАВНОЕ АДМИН-МЕНЮ ==========
-
 @security_required
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     keyboard = [
@@ -95,11 +94,14 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    if update.callback_query:
+    if update.message:
+        msg = await update.message.reply_text("Панель администратора:", reply_markup=reply_markup)
+        context.user_data['admin_menu_message_id'] = msg.message_id
+        
+    elif update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text("Панель администратора:", reply_markup=reply_markup)
-    else:
-        await update.message.reply_text("Панель администратора:", reply_markup=reply_markup)
+        context.user_data['admin_menu_message_id'] = update.callback_query.message.message_id
         
     return ADMIN_MAIN_MENU
 
@@ -138,20 +140,34 @@ async def show_schedule_main_menu(update: Update, context: ContextTypes.DEFAULT_
 # ========== ЛОГИКА ДОБАВЛЕНИЯ СОТРУДНИКА ==========
 
 async def admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Отменяет админское действие и возвращает главное меню."""
-    context.user_data.clear()
+    """Отменяет админское действие, удаляет старое меню и возвращает главные кнопки."""
     user_id = update.effective_user.id
     employee = await db_manager.get_employee_by_telegram_id(user_id)
     role = employee.get('role', 'employee') if employee else 'employee'
     
-    await update.message.reply_text("Действие отменено. Возврат в главное меню.", reply_markup=get_main_keyboard(role))
+    admin_msg_id = context.user_data.get('admin_menu_message_id')
+    if admin_msg_id:
+        try:
+            await context.bot.delete_message(chat_id=user_id, message_id=admin_msg_id)
+        except Exception:
+            pass
+
+    context.user_data.clear()
+    
+    await update.message.reply_text(
+        "❌ Действие отменено. Вы вернулись в главное меню.", 
+        reply_markup=get_main_keyboard(role)
+    )
     return ConversationHandler.END
 
 async def start_add_employee(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+    
+    # Сохраняем ID меню перед тем, как отправить текстовое сообщение
+    context.user_data['admin_menu_message_id'] = query.message.message_id
+    
     context.user_data['new_employee'] = {}
-
     cancel_kb = ReplyKeyboardMarkup([[KeyboardButton("❌ Отмена")]], resize_keyboard=True)
     
     await query.message.reply_text("Начинаем добавление нового сотрудника.\nВведите **Фамилию** (или нажмите '❌ Отмена' для выхода):", 
@@ -391,6 +407,14 @@ async def finalize_add_employee(update: Update, context: ContextTypes.DEFAULT_TY
         try:
             await db_manager.add_employee(employee_data)
             await update.message.reply_text(f"✅ Сотрудник {full_name} успешно добавлен!", reply_markup=get_main_keyboard(role))
+
+            admin_msg_id = context.user_data.get('admin_menu_message_id')
+            if admin_msg_id:
+                try:
+                    await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=admin_msg_id)
+                except Exception:
+                    pass
+
         except Exception as e:
             await update.message.reply_text(f"❌ Произошла ошибка при добавлении в базу данных: {e}")
     else:
@@ -676,6 +700,7 @@ async def request_edit_data_value(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     field = query.data.split('_', 3)[3]
     context.user_data['current_edit_field'] = field
+    context.user_data['admin_menu_message_id'] = query.message.message_id
     
     reply_keyboard = None
     message_text = f"Введите новое значение для поля '{EDITABLE_FIELDS.get(field, field)}'\n(или нажмите '❌ Отмена'):"
@@ -731,21 +756,23 @@ async def save_data_with_reason(update: Update, context: ContextTypes.DEFAULT_TY
     admin_id_for_log = admin_employee['id'] if admin_employee else None
 
     try:
-        # Получаем старое значение
         employee = await db_manager.get_employee_by_id(employee_id)
         old_value = employee.get(field)
 
-        # Обновляем поле
         await db_manager.update_employee_field(employee_id, field, new_value)
         
-        # --- СИНХРОНИЗАЦИЯ FULL_NAME ---
-        # Если изменили часть имени, нужно пересобрать full_name в БД
         if field in ['last_name', 'first_name', 'middle_name']:
             await db_manager.sync_employee_full_name(employee_id)
 
         await db_manager.log_employee_change(admin_id_for_log, employee_id, field, old_value, new_value, reason)
 
         await update.message.reply_text(f"✅ Поле '{EDITABLE_FIELDS.get(field, field)}' успешно обновлено.", reply_markup=ReplyKeyboardRemove())
+        admin_msg_id = context.user_data.get('admin_menu_message_id')
+        if admin_msg_id:
+            try:
+                await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=admin_msg_id)
+            except Exception:
+                pass
     except Exception as e:
         logger.error(f"Edit error: {e}")
         await update.message.reply_text(f"❌ Ошибка при сохранении: {e}", reply_markup=ReplyKeyboardRemove())
@@ -757,6 +784,8 @@ async def schedule_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Шаг 1: Выбор режима (одна дата / период)."""
     query = update.callback_query
     await query.answer()
+
+    context.user_data['admin_menu_message_id'] = query.message.message_id
 
     keyboard = [
         [InlineKeyboardButton("Одна дата", callback_data='sched_mode_single')],
@@ -1053,6 +1082,13 @@ async def finalize_reset_2fa(update: Update, context: ContextTypes.DEFAULT_TYPE)
         employee = await db_manager.get_employee_by_id(employee_id)
         await db_manager.set_totp_secret(employee_id, None)
         await query.edit_message_text(f"✅ 2FA для сотрудника *{employee['full_name']}* успешно сброшен.")
+
+        admin_msg_id = context.user_data.get('admin_menu_message_id')
+        if admin_msg_id:
+            try:
+                await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=admin_msg_id)
+            except Exception:
+                pass
     else: # отмена
         await query.edit_message_text("Сброс 2FA отменен.")
     
@@ -1378,6 +1414,8 @@ async def view_absences_generate_report(update: Update, context: ContextTypes.DE
 async def start_fire_employee(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+
+    context.user_data['admin_menu_message_id'] = query.message.message_id
     
     employee_id = context.user_data['employee_to_edit_id']
     employee = await db_manager.get_employee_by_id(employee_id)
@@ -1403,7 +1441,14 @@ async def finalize_fire_employee(update: Update, context: ContextTypes.DEFAULT_T
         try:
             await db_manager.fire_employee(employee_id)
             await update.message.reply_text(f"✅ Сотрудник *{target_employee['full_name']}* успешно уволен.", parse_mode='Markdown', reply_markup=get_main_keyboard(role))
-            # Логируем действие
+            
+            admin_msg_id = context.user_data.get('admin_menu_message_id')
+            if admin_msg_id:
+                try:
+                    await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=admin_msg_id)
+                except Exception:
+                    pass
+
             await db_manager.log_employee_change(
                 admin_id=admin_employee['id'], 
                 employee_id=employee_id, 
@@ -1426,6 +1471,8 @@ async def finalize_fire_employee(update: Update, context: ContextTypes.DEFAULT_T
 async def start_delete_employee(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+
+    context.user_data['admin_menu_message_id'] = query.message.message_id
     
     employee_id = context.user_data['employee_to_edit_id']
     employee = await db_manager.get_employee_by_id(employee_id)
@@ -1451,6 +1498,12 @@ async def finalize_delete_employee(update: Update, context: ContextTypes.DEFAULT
         try:
             await db_manager.delete_employee_permanently(employee_id)
             await update.message.reply_text(f"🗑 Сотрудник *{target_employee['full_name']}* был полностью удален из БД.", parse_mode='Markdown', reply_markup=get_main_keyboard(role))
+            admin_msg_id = context.user_data.get('admin_menu_message_id')
+            if admin_msg_id:
+                try:
+                    await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=admin_msg_id)
+                except Exception:
+                    pass
         except Exception as e:
             await update.message.reply_text(f"❌ Ошибка БД при удалении: {e}", reply_markup=get_main_keyboard(role))
             

@@ -1488,19 +1488,24 @@ admin_conv = ConversationHandler(
         
         # === ПОТОК: Добавление сотрудника ===
         ADD_LAST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_last_name)],
-        ADD_FIRST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_first_name)],
-        ADD_MIDDLE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_middle_name)],
-        ADD_CITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_city)],
-        ADD_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_phone)],
+        ADD_FIRST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_first_name)],
+        ADD_MIDDLE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_middle_name)],
+        ADD_CITY: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_city)],
+        ADD_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_phone)],
+        
         ADD_POSITION: [CallbackQueryHandler(get_position, pattern='^pos_')],
-        AWAITING_CONTACT: [MessageHandler(filters.CONTACT, get_contact), MessageHandler(filters.TEXT, wrong_input_in_contact_step)],
+        AWAITING_CONTACT: [MessageHandler(filters.CONTACT, get_contact), MessageHandler(filters.TEXT & ~filters.Regex("^❌ Отмена$"), wrong_input_in_contact_step)],
         ADD_SCHEDULE_PATTERN: [CallbackQueryHandler(get_schedule_pattern, pattern='^sched_')],
         ADD_ROLE: [CallbackQueryHandler(get_role, pattern='^role_')],
+
         ADD_START_TIME: [MessageHandler(filters.Regex(r'^\d{2}:\d{2}$'), get_start_time)],
         ADD_END_TIME: [MessageHandler(filters.Regex(r'^\d{2}:\d{2}$'), get_end_time)],
+        
         ADD_EMPLOYEE_MENU: [CallbackQueryHandler(select_field_menu, pattern='^action_edit$'), CallbackQueryHandler(confirm_add_employee, pattern='^action_confirm$')],
         SELECT_FIELD: [CallbackQueryHandler(request_field_value, pattern='^field_'), CallbackQueryHandler(show_add_employee_menu, pattern='^back_to_menu$')],
-        GET_FIELD_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_field_value)],
+        
+        GET_FIELD_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_field_value)],
+        
         AWAITING_ADD_EMPLOYEE_2FA: [MessageHandler(filters.Regex(r'^\d{6}$'), finalize_add_employee)],
 
         # === ПОТОК: Редактирование карточки ===
@@ -1524,24 +1529,24 @@ admin_conv = ConversationHandler(
         ],
         RELATIVES_MENU: [
             CallbackQueryHandler(start_add_relative, pattern='^add_new_relative$'),
-            CallbackQueryHandler(start_edit_data, pattern='^back_to_fields$'), # Назад к списку полей
-            CallbackQueryHandler(show_relatives_menu, pattern='^manage_relatives$'), # Рефреш
+            CallbackQueryHandler(start_edit_data, pattern='^back_to_fields$'), 
+            CallbackQueryHandler(show_relatives_menu, pattern='^manage_relatives$'), 
         ],
         REL_ADD_TYPE: [CallbackQueryHandler(get_rel_type, pattern='^rel_type_')],
-        REL_ADD_LAST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_rel_last_name)],
-        REL_ADD_FIRST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_rel_first_name)],
-        REL_ADD_MIDDLE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_rel_middle_name)],
-        REL_ADD_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_rel_phone)],
-        REL_ADD_BIRTH_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_rel_birth_date)],
-        REL_ADD_WORKPLACE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_rel_workplace)],
-        REL_ADD_POSITION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_rel_position)],
-        REL_ADD_REG_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_rel_reg_address)],
+        REL_ADD_LAST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_rel_last_name)],
+        REL_ADD_FIRST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_rel_first_name)],
+        REL_ADD_MIDDLE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_rel_middle_name)],
+        REL_ADD_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_rel_phone)],
+        REL_ADD_BIRTH_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_rel_birth_date)],
+        REL_ADD_WORKPLACE: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_rel_workplace)],
+        REL_ADD_POSITION: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_rel_position)],
+        REL_ADD_REG_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_rel_reg_address)],
         REL_ADD_LIV_ADDRESS: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, get_rel_liv_address),
+            MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_rel_liv_address),
             CallbackQueryHandler(get_rel_liv_address, pattern='^same_address$')
         ],
-        EDIT_DATA_GET_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_edited_data_value)],
-        EDIT_DATA_GET_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_data_with_reason)],
+        EDIT_DATA_GET_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_edited_data_value)],
+        EDIT_DATA_GET_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), save_data_with_reason)],
         AWAITING_RESET_2FA_CONFIRM: [CallbackQueryHandler(finalize_reset_2fa, pattern='^confirm_reset_yes$'), CallbackQueryHandler(show_employee_edit_menu, pattern='^back_to_edit_menu$')],
         
         # === ПОТОК: Изменение графика ===

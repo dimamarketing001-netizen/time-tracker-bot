@@ -3,7 +3,10 @@ import logging
 from config import DB_HOST, DB_PORT, DB_USER, DB_PASS, DB_NAME
 from typing import Optional, Dict, Any, List
 from datetime import date, timedelta, time
+import pytz 
+import datetime
 
+TARGET_TIMEZONE = pytz.timezone('Asia/Yekaterinburg')
 logger = logging.getLogger(__name__)
 
 pool = None
@@ -486,11 +489,12 @@ async def get_employees_by_position(position: str) -> List[Dict[str, Any]]:
     return await fetch_all(query, (position,))
 
 async def get_today_schedule(employee_id: int) -> Dict[str, Any]:
-    """Возвращает информацию о графике сотрудника на СЕГОДНЯ."""
-    today = date.today()
-    # Используем нашу умную функцию, которая учитывает 2/2, 6/1 и т.д.
+    """Возвращает информацию о графике сотрудника на СЕГОДНЯ (по времени Екб)."""
+    # Берем дату в нужном часовом поясе
+    today = datetime.now(TARGET_TIMEZONE).date() 
+    
     schedule_list = await get_employee_schedule_for_period(employee_id, today, today)
     
     if schedule_list:
-        return schedule_list[0] # Возвращаем словарь дня
+        return schedule_list[0]
     return None

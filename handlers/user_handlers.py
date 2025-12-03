@@ -8,6 +8,7 @@ import db_manager, config
 import json
 from config import REDIS_OPERATORS_ONLINE_SET, REDIS_OPERATOR_TASK_PREFIX
 from utils import generate_totp_qr_code, verify_totp, get_main_keyboard
+import pytz
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,8 @@ USER_REPORT_SELECT_PERIOD, USER_REPORT_SHOW = range(2)
 GET_EARLY_LEAVE_REASON, GET_EARLY_LEAVE_PERIOD = range(10, 12) 
 
 WEEKDAY_NAMES_RU = {0: "ПН", 1: "ВТ", 2: "СР", 3: "ЧТ", 4: "ПТ", 5: "СБ", 6: "ВС"}
+
+TARGET_TIMEZONE = pytz.timezone('Asia/Yekaterinburg') 
 
 async def my_schedule_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало диалога просмотра своего графика."""
@@ -299,38 +302,57 @@ async def clock_out_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return ConversationHandler.END # Завершаем диалог для кассира, он ждет ответа
     
     if reason == 'Завершение дня':
-        # 1. Получаем график на сегодня
         today_schedule = await db_manager.get_today_schedule(employee['id'])
         
-        # Если график есть и это рабочий день
         if today_schedule and today_schedule['status'] == 'Работа':
             end_time_val = today_schedule['end_time']
             
-            # Приводим к datetime для сравнения
-            now = datetime.now()
+            # Получаем текущее время в правильном часовом поясе
+            now = datetime.now(TARGET_TIMEZONE) 
+            
             planned_end_dt = None
             
-            if isinstance(end_time_val, str):
-                try:
-                    et = datetime.strptime(end_time_val, '%H:%M:%S').time()
-                    planned_end_dt = now.replace(hour=et.hour, minute=et.minute, second=0)
-                except:
-                    pass # Ошибка парсинга
+            if end_time_val:
+                # Преобразуем end_time_val в time (он может быть timedelta или str)
+                et = None
+                if isinstance(end_time_val, str):
+                    try:
+                        et = datetime.strptime(end_time_val, '%H:%M:%S').time()
+                    except:
+                        try:
+                            et = datetime.strptime(end_time_val, '%H:%M').time()
+                        except:
+                            pass
+                elif isinstance(end_time_val, timedelta):
+                    total_seconds = int(end_time_val.total_seconds())
+                    hours = total_seconds // 3600
+                    minutes = (total_seconds % 3600) // 60
+                    et = datetime.time(hour=hours, minute=minutes)
+                elif isinstance(end_time_val, datetime.time): # Если вдруг уже time
+                     et = end_time_val
+
+                if et:
+                    # Создаем datetime с правильной датой и таймзоной
+                    planned_end_dt = now.replace(hour=et.hour, minute=et.minute, second=0, microsecond=0)
             
-            # Если плановое время есть и сейчас РАНЬШЕ (с небольшим запасом, например 5 минут)
-            if planned_end_dt and now < planned_end_dt - timedelta(minutes=5):
-                # Сохраняем данные для следующего шага
-                context.user_data['early_leave_data'] = {
-                    'planned_end': end_time_val,
-                    'actual_end': now.strftime('%H:%M')
-                }
+            # Если плановое время определено и сейчас РАНЬШЕ
+            if planned_end_dt:
+                # Проверка: если смена переходит через полночь (например до 02:00), логика сложнее,
+                # но для дневных смен (до 23:00) это сработает.
                 
-                await query.edit_message_text(
-                    f"⚠️ Вы завершаете смену раньше времени (план: {end_time_val}).\n\n"
-                    f"Пожалуйста, укажите **причину раннего ухода** (отправьте текстовое сообщение):",
-                    parse_mode='Markdown'
-                )
-                return GET_EARLY_LEAVE_REASON
+                if now < planned_end_dt - timedelta(minutes=5):
+                    # Сохраняем данные строкой
+                    context.user_data['early_leave_data'] = {
+                        'planned_end': str(end_time_val),
+                        'actual_end': now.strftime('%H:%M')
+                    }
+                    
+                    await query.edit_message_text(
+                        f"⚠️ Вы завершаете смену раньше времени (план: {end_time_val}).\n\n"
+                        f"Пожалуйста, укажите **причину раннего ухода** (отправьте текстовое сообщение):",
+                        parse_mode='Markdown'
+                    )
+                    return GET_EARLY_LEAVE_REASON
 
     # 4. Если все проверки пройдены - запрашиваем 2FA у сотрудника
     context.user_data['pending_action'] = {'type': 'clock_out', 'status': new_status, 'reason': reason}

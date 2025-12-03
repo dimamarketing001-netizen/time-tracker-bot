@@ -1,6 +1,6 @@
 import logging
-from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from datetime import datetime,date, timedelta
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup,ReplyKeyboardRemove
 from telegram.ext import ContextTypes, ConversationHandler
 from .auth_handlers import VERIFY_2FA_SETUP_CODE, AWAITING_ACTION_TOTP, start_2fa_setup
 import db_manager, config
@@ -11,6 +11,131 @@ from utils import generate_totp_qr_code, verify_totp, get_main_keyboard
 logger = logging.getLogger(__name__)
 
 VERIFY_2FA_SETUP_CODE, AWAITING_ACTION_TOTP = range(2)
+USER_REPORT_SELECT_PERIOD, USER_REPORT_SHOW = range(2)
+
+WEEKDAY_NAMES_RU = {0: "ПН", 1: "ВТ", 2: "СР", 3: "ЧТ", 4: "ПТ", 5: "СБ", 6: "ВС"}
+
+async def my_schedule_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начало диалога просмотра своего графика."""
+    # Получаем сотрудника (на всякий случай проверяем регистрацию)
+    user_id = update.effective_user.id
+    employee = await db_manager.get_employee_by_telegram_id(user_id)
+    if not employee:
+        await update.message.reply_text("Ваш профиль не найден.")
+        return ConversationHandler.END
+
+    # Сохраняем ID сотрудника (себя)
+    context.user_data['my_schedule_emp_id'] = employee['id']
+    
+    keyboard = [
+        [InlineKeyboardButton("Текущая неделя", callback_data='my_period_week')],
+        [InlineKeyboardButton("Текущий месяц", callback_data='my_period_month')],
+        [InlineKeyboardButton("Текущий квартал", callback_data='my_period_quarter')],
+        [InlineKeyboardButton("❌ Закрыть", callback_data='my_report_close')],
+    ]
+    
+    # Отправляем сообщение с инлайн-кнопками. 
+    # Основная клавиатура (внизу) остается, так как мы не делаем ReplyKeyboardRemove
+    await update.message.reply_text(
+        "Выберите период для просмотра вашего графика:", 
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return USER_REPORT_SELECT_PERIOD
+
+async def my_schedule_generate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Генерирует отчет для пользователя."""
+    query = update.callback_query
+    await query.answer("Загружаю график...")
+    
+    period = query.data.split('_')[2]
+    employee_id = context.user_data['my_schedule_emp_id']
+    
+    # Логика дат (такая же, как в админке)
+    today = date.today()
+    if period == 'week':
+        start_date = today - timedelta(days=today.weekday())
+        end_date = start_date + timedelta(days=6)
+    elif period == 'month':
+        start_date = today.replace(day=1)
+        # Хитрый способ получить последний день месяца
+        next_month = start_date.replace(day=28) + timedelta(days=4)
+        end_date = next_month - timedelta(days=next_month.day)
+    elif period == 'quarter':
+        current_quarter = (today.month - 1) // 3 + 1
+        start_month = 3 * current_quarter - 2
+        start_date = date(today.year, start_month, 1)
+        end_month = start_month + 2
+        next_q = date(today.year, end_month, 28) + timedelta(days=4)
+        end_date = next_q - timedelta(days=next_q.day)
+        
+    schedule_data = await db_manager.get_employee_schedule_for_period(employee_id, start_date, end_date)
+    
+    header = (
+        f"📅 *Мой график*\n"
+        f"Период: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}\n\n"
+    )
+    
+    table = "```\n"
+    table += "| Дата      | День | Время         | Статус          |\n"
+    table += "|-----------|------|---------------|-----------------|\n"
+    
+    for day in schedule_data:
+        dt = day['date']
+        date_str = dt.strftime('%d.%m.%y')
+        weekday_str = WEEKDAY_NAMES_RU[dt.weekday()]
+        
+        start_t = day['start_time']
+        end_t = day['end_time']
+        # Форматирование времени (убираем секунды)
+        if start_t: start_t = str(start_t)[:5]
+        if end_t: end_t = str(end_t)[:5]
+
+        time_str = f"{start_t or '--:--'} - {end_t or '--:--'}"
+        status_str = day['status']
+        # Обрезаем статус, если слишком длинный, чтобы таблица не поехала
+        if len(status_str) > 15: status_str = status_str[:14] + "."
+        
+        table += f"| {date_str:<9} | {weekday_str:<4} | {time_str:<13} | {status_str:<15} |\n"
+        
+    table += "```"
+    
+    # Кнопки навигации
+    keyboard = [
+        [InlineKeyboardButton("⬅️ Выбрать другой период", callback_data='back_to_my_period_select')],
+        [InlineKeyboardButton("❌ Закрыть", callback_data='my_report_close')]
+    ]
+    
+    await query.edit_message_text(
+        header + table, 
+        reply_markup=InlineKeyboardMarkup(keyboard), 
+        parse_mode='Markdown'
+    )
+    return USER_REPORT_SHOW
+
+async def my_schedule_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Возврат к выбору периода."""
+    query = update.callback_query
+    await query.answer()
+    
+    keyboard = [
+        [InlineKeyboardButton("Текущая неделя", callback_data='my_period_week')],
+        [InlineKeyboardButton("Текущий месяц", callback_data='my_period_month')],
+        [InlineKeyboardButton("Текущий квартал", callback_data='my_period_quarter')],
+        [InlineKeyboardButton("❌ Закрыть", callback_data='my_report_close')],
+    ]
+    await query.edit_message_text("Выберите период для просмотра вашего графика:", reply_markup=InlineKeyboardMarkup(keyboard))
+    return USER_REPORT_SELECT_PERIOD
+
+async def my_schedule_close(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Закрывает отчет (удаляет сообщение)."""
+    query = update.callback_query
+    await query.answer()
+    try:
+        await query.message.delete()
+    except:
+        pass
+    # Мы просто завершаем диалог, основные кнопки и так на месте
+    return ConversationHandler.END
 
 def format_deal_info(deal: dict) -> str:
     """Форматирует информацию о сделке для вывода пользователю с экранированием для MarkdownV2."""

@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 BTN_START_SHIFT = "🟢 Начать смену"
 BTN_END_SHIFT = "🔴 Закончить смену"
-BTN_REPORT = "📊 Отчет"
+BTN_REPORT = "📅 Мой график"
 BTN_ADMIN = "🔐 Админка"
 
 async def post_init(application: Application):
@@ -118,7 +118,36 @@ def main() -> None:
     )
     application.add_handler(off_handler)
 
-    # 4. Прочие команды
+    # 4. Обработчик "Мой график"
+    my_schedule_handler = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.Regex(f"^{BTN_REPORT}$"), user_handlers.my_schedule_start),
+            CommandHandler("report", user_handlers.my_schedule_start) 
+        ],
+        states={
+            user_handlers.USER_REPORT_SELECT_PERIOD: [
+                CallbackQueryHandler(user_handlers.my_schedule_generate, pattern='^my_period_'),
+                CallbackQueryHandler(user_handlers.my_schedule_close, pattern='^my_report_close$')
+            ],
+            user_handlers.USER_REPORT_SHOW: [
+                CallbackQueryHandler(user_handlers.my_schedule_back, pattern='^back_to_my_period_select$'),
+                CallbackQueryHandler(user_handlers.my_schedule_close, pattern='^my_report_close$')
+            ]
+        },
+        fallbacks=[
+            CommandHandler('cancel', user_handlers.my_schedule_close),
+            # Если пользователь нажмет другую кнопку меню во время просмотра, 
+            # ConversationHandler может перехватить это. 
+            # Добавим выход по нажатию основных кнопок:
+            MessageHandler(filters.Regex(f"^({BTN_START_SHIFT}|{BTN_END_SHIFT}|{BTN_ADMIN})$"), user_handlers.my_schedule_close)
+        ],
+        per_user=True,
+        allow_reentry=True # Позволяет открыть отчет заново, если он завис
+    )
+    
+    application.add_handler(my_schedule_handler)
+
+    # 5. Прочие команды
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("report", user_handlers.generate_report_placeholder))
     application.add_handler(MessageHandler(filters.Regex(f"^{BTN_REPORT}$"), user_handlers.generate_report_placeholder))

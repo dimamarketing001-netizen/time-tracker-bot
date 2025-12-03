@@ -15,7 +15,7 @@ def get_main_keyboard(role: str) -> ReplyKeyboardMarkup:
 
     keyboard = [
         [KeyboardButton("🟢 Начать смену"), KeyboardButton("🔴 Закончить смену")],
-        [KeyboardButton("📊 Отчет")]
+        [KeyboardButton("📅 Мой график")]
     ]
     
     if safe_role in ['admin', 'security']:

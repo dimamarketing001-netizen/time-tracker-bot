@@ -106,6 +106,17 @@ def main() -> None:
                 CallbackQueryHandler(user_handlers.request_deal_approval_from_sb, pattern='^request_deal_approval_')
             ],
             user_handlers.GET_EARLY_LEAVE_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, user_handlers.get_early_leave_reason)],
+            user_handlers.SELECT_LEAVE_TYPE: [
+                CallbackQueryHandler(user_handlers.select_leave_type, pattern='^leave_type_')
+            ],
+            user_handlers.SELECT_LEAVE_DATE_START: [
+                CallbackQueryHandler(user_handlers.leave_date_start_callback, pattern='^cal_')
+            ],
+            user_handlers.SELECT_LEAVE_DATE_END: [
+                CallbackQueryHandler(user_handlers.leave_date_end_callback, pattern='^cal_')
+            ],
+            user_handlers.GET_LEAVE_TIME_START: [MessageHandler(filters.TEXT & ~filters.COMMAND, user_handlers.get_leave_time_start)],
+            user_handlers.GET_LEAVE_TIME_END: [MessageHandler(filters.TEXT & ~filters.COMMAND, user_handlers.get_leave_time_end)],
             user_handlers.GET_EARLY_LEAVE_PERIOD: [MessageHandler(filters.TEXT & ~filters.COMMAND, user_handlers.get_early_leave_period)],
             auth_handlers.AWAITING_ACTION_TOTP: [
                 MessageHandler(filters.Regex(r'^\d{6}$'), auth_handlers.verify_action_totp)

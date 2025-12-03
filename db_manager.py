@@ -2,9 +2,8 @@ import aiomysql
 import logging
 from config import DB_HOST, DB_PORT, DB_USER, DB_PASS, DB_NAME
 from typing import Optional, Dict, Any, List
-from datetime import date, timedelta, time
+from datetime import date, timedelta, time, datetime
 import pytz 
-import datetime
 
 TARGET_TIMEZONE = pytz.timezone('Asia/Yekaterinburg')
 logger = logging.getLogger(__name__)

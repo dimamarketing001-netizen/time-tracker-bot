@@ -25,29 +25,32 @@ ADMIN_MAIN_MENU = 0
 # --- ЕДИНЫЙ БЛОК СОСТОЯНИЙ ДЛЯ ВСЕЙ АДМИН-ПАНЕЛИ ---
 (
     # Меню
-    ADMIN_MAIN_MENU,             # 0
-    EMPLOYEE_CARD_MENU,          # 1
-    SCHEDULE_MAIN_MENU,          # 2
+    ADMIN_MAIN_MENU,             
+    EMPLOYEE_CARD_MENU,          
+    SCHEDULE_MAIN_MENU,          
+
+    SELECT_POSITION,             
+    SELECT_EMPLOYEE_FROM_LIST,
 
     # Поток добавления сотрудника
     ADD_LAST_NAME, ADD_FIRST_NAME, ADD_MIDDLE_NAME, ADD_CITY, ADD_PHONE, ADD_POSITION, AWAITING_CONTACT, ADD_SCHEDULE_PATTERN, ADD_SCHEDULE_ANCHOR, ADD_ROLE,
     ADD_START_TIME, ADD_END_TIME, ADD_EMPLOYEE_MENU, SELECT_FIELD, GET_FIELD_VALUE,
-    AWAITING_ADD_EMPLOYEE_2FA,   # 3-13
+    AWAITING_ADD_EMPLOYEE_2FA,   
 
     # Поток редактирования сотрудника
     SELECT_EMPLOYEE_TO_EDIT, EDIT_MAIN_MENU, EDIT_DATA_SELECT_FIELD,
-    EDIT_DATA_GET_VALUE, EDIT_DATA_GET_REASON, AWAITING_RESET_2FA_CONFIRM, # 14-19
+    EDIT_DATA_GET_VALUE, EDIT_DATA_GET_REASON, AWAITING_RESET_2FA_CONFIRM, 
 
     # Поток изменения графика
     SCHEDULE_SELECT_MODE, SCHEDULE_SELECT_TYPE, SCHEDULE_SELECT_DATE_1,
-    SCHEDULE_SELECT_DATE_2, SCHEDULE_GET_START_TIME, SCHEDULE_GET_END_TIME, # 20-25
+    SCHEDULE_SELECT_DATE_2, SCHEDULE_GET_START_TIME, SCHEDULE_GET_END_TIME,
     
     # Поток просмотра графика по сотруднику
-    VIEW_SCHEDULE_SELECT_EMPLOYEE, VIEW_SCHEDULE_SELECT_PERIOD, VIEW_SCHEDULE_SHOW_REPORT, # 26-28
+    VIEW_SCHEDULE_SELECT_EMPLOYEE, VIEW_SCHEDULE_SELECT_PERIOD, VIEW_SCHEDULE_SHOW_REPORT, 
     
     # Поток просмотра отгулов
-    VIEW_ABSENCES_SELECT_PERIOD, # 29
-    VIEW_ABSENCES_SHOW_REPORT,   # 31
+    VIEW_ABSENCES_SELECT_PERIOD, 
+    VIEW_ABSENCES_SHOW_REPORT,   
 
     SCHEDULE_CONFIRM_DEAL_MOVE,
 
@@ -60,7 +63,7 @@ ADMIN_MAIN_MENU = 0
 
     AWAITING_FIRE_EMPLOYEE_2FA,
     AWAITING_DELETE_EMPLOYEE_2FA,
-) = range(51)
+) = range(53)
 
 
 # ========== СЛОВАРИ И ВСПОМОГАТЕЛЬНЫЕ ДАННЫЕ ==========
@@ -161,6 +164,145 @@ async def admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     )
     return ConversationHandler.END
 
+async def start_select_position(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Универсальная функция старта выбора.
+    Определяет, какое действие мы хотим совершить (Edit Card, View Sched, Edit Sched),
+    сохраняет его в контекст и показывает список должностей.
+    """
+    query = update.callback_query
+    await query.answer()
+    
+    # Определяем тип действия по нажатой кнопке
+    action_map = {
+        'admin_edit_start': 'edit_card',
+        'admin_view_schedule_start': 'view_schedule',
+        'admin_edit_schedule_start': 'edit_schedule'
+    }
+    
+    # Если мы пришли из кнопки "Назад" (из списка сотрудников), то тип действия уже в памяти
+    action_type = action_map.get(query.data)
+    if not action_type:
+        action_type = context.user_data.get('admin_action_type')
+    else:
+        context.user_data['admin_action_type'] = action_type
+
+    # Получаем должности
+    positions = await db_manager.get_unique_positions()
+    
+    if not positions:
+        await query.edit_message_text("В базе нет сотрудников с указанными должностями.", 
+                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data='back_to_admin_panel')]]))
+        return ADMIN_MAIN_MENU
+
+    keyboard = []
+    # Группируем по 2 кнопки в ряд
+    row = []
+    for pos in positions:
+        # callback: sel_pos_НазваниеДолжности
+        row.append(InlineKeyboardButton(pos, callback_data=f"sel_pos_{pos}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+        
+    # Кнопка назад зависит от того, откуда пришли
+    back_callback = 'go_to_employee_card_menu' if action_type == 'edit_card' else 'go_to_schedule_menu'
+    keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data=back_callback)])
+    
+    titles = {
+        'edit_card': "Изменение карточки",
+        'view_schedule': "Просмотр графика",
+        'edit_schedule': "Изменение графика"
+    }
+    
+    await query.edit_message_text(
+        f"*{titles.get(action_type)}*\nВыберите должность:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+    return SELECT_POSITION
+
+async def select_employee_by_position(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Показывает список сотрудников выбранной должности."""
+    query = update.callback_query
+    await query.answer()
+    
+    # Получаем должность (учтите, что должность может содержать пробелы)
+    position = query.data.split('_', 2)[2] 
+    employees = await db_manager.get_employees_by_position(position)
+    
+    keyboard = []
+    for emp in employees:
+        # callback: sel_emp_ID
+        keyboard.append([InlineKeyboardButton(emp['full_name'], callback_data=f"sel_emp_{emp['id']}")])
+        
+    # Кнопка назад к выбору должностей
+    keyboard.append([InlineKeyboardButton("⬅️ Назад к должностям", callback_data='back_to_positions')])
+    
+    await query.edit_message_text(
+        f"Сотрудники в должности *{position}*:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+    return SELECT_EMPLOYEE_FROM_LIST
+
+async def route_selected_employee(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Принимает выбранного сотрудника и направляет в нужное русло
+    в зависимости от сохраненного action_type.
+    """
+    query = update.callback_query
+    await query.answer()
+    
+    employee_id = int(query.data.split('_')[2])
+    action_type = context.user_data.get('admin_action_type')
+    
+    if action_type == 'edit_card':
+        # Логика редактирования карточки
+        context.user_data['employee_to_edit_id'] = employee_id
+        # Вызываем функцию показа меню редактирования (нужно убедиться, что она принимает update)
+        # Нам нужно подменить update или просто вызвать логику
+        # Проще всего вызвать функцию show_employee_edit_menu, но она ожидает callback edit_emp_ или сохраненный ID
+        # ID мы сохранили выше.
+        return await show_employee_edit_menu(update, context)
+        
+    elif action_type == 'view_schedule':
+        # Логика просмотра графика
+        context.user_data['view_employee_id'] = employee_id
+        
+        # Сразу переходим к выбору периода (минуя старый шаг выбора сотрудника из всех)
+        # Копируем логику из view_schedule_select_employee
+        keyboard = [
+            [InlineKeyboardButton("Текущая неделя", callback_data='view_period_week')],
+            [InlineKeyboardButton("Текущий месяц", callback_data='view_period_month')],
+            [InlineKeyboardButton("Текущий квартал", callback_data='view_period_quarter')],
+            [InlineKeyboardButton("⬅️ Назад к списку", callback_data=f"sel_pos_RETURN")], # Хитрость: вернемся в список сотрудников этой должности
+        ]
+        # Нам нужно знать должность, чтобы вернуться назад. 
+        # Проще вернуть в список должностей или главное меню.
+        # Давайте сделаем кнопку "Назад к выбору сотрудника", которая вызовет start_select_position
+        
+        keyboard = [
+            [InlineKeyboardButton("Текущая неделя", callback_data='view_period_week')],
+            [InlineKeyboardButton("Текущий месяц", callback_data='view_period_month')],
+            [InlineKeyboardButton("Текущий квартал", callback_data='view_period_quarter')],
+            [InlineKeyboardButton("⬅️ Назад к выбору должности", callback_data='back_to_positions')],
+        ]
+        
+        await query.edit_message_text("Выберите период для просмотра:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return VIEW_SCHEDULE_SELECT_PERIOD
+        
+    elif action_type == 'edit_schedule':
+        # Логика изменения графика
+        context.user_data['employee_to_edit_id'] = employee_id
+        return await schedule_start(update, context)
+        
+    else:
+        await query.edit_message_text("Ошибка: неизвестное действие.")
+        return ADMIN_MAIN_MENU
+    
 async def start_add_employee(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -586,7 +728,7 @@ async def show_employee_edit_menu(update: Update, context: ContextTypes.DEFAULT_
     if admin_role == 'admin':
         keyboard.append([InlineKeyboardButton("🗑 УДАЛИТЬ ИЗ БД", callback_data="delete_employee_start")])
 
-    keyboard.append([InlineKeyboardButton("⬅️ Назад к списку сотрудников", callback_data="back_to_employee_list")])
+    keyboard.append([InlineKeyboardButton("⬅️ Назад к выбору", callback_data="back_to_positions")])
     
     text = f"Редактирование: *{target_employee['full_name']}*\nДолжность: {target_employee.get('position', '-')}\n\nВыберите действие:"
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -988,7 +1130,7 @@ async def schedule_show_type_selector(update: Update, context: ContextTypes.DEFA
         [InlineKeyboardButton("Полностью выходной/отгул", callback_data='sched_type_DAY_OFF')],
         [InlineKeyboardButton("Больничный", callback_data='sched_type_SICK_LEAVE')],
         [InlineKeyboardButton("Изменить рабочее время", callback_data='sched_type_WORK_TIME')],
-        [InlineKeyboardButton("⬅️ Назад", callback_data='back_to_edit_menu')],
+        [InlineKeyboardButton("⬅️ Назад", callback_data='back_to_positions')],
     ]
     
     date1 = context.user_data['schedule_date_1']
@@ -1649,14 +1791,23 @@ admin_conv = ConversationHandler(
         # === УРОВЕНЬ 2: ПОДМЕНЮ ===
         EMPLOYEE_CARD_MENU: [
             CallbackQueryHandler(start_add_employee, pattern='^admin_add_start$'),
-            CallbackQueryHandler(start_edit_employee, pattern='^admin_edit_start$'),
+            CallbackQueryHandler(start_select_position, pattern='^admin_edit_start$'), 
             CallbackQueryHandler(admin_panel, pattern='^back_to_admin_panel$'),
         ],
         SCHEDULE_MAIN_MENU: [
-            CallbackQueryHandler(view_schedule_start, pattern='^admin_view_schedule_start$'),
-            CallbackQueryHandler(edit_schedule_start_select_employee, pattern='^admin_edit_schedule_start$'),
+            CallbackQueryHandler(start_select_position, pattern='^admin_view_schedule_start$'),
+            CallbackQueryHandler(start_select_position, pattern='^admin_edit_schedule_start$'),
             CallbackQueryHandler(view_absences_start, pattern='^view_absences_start$'),
             CallbackQueryHandler(admin_panel, pattern='^back_to_admin_panel$'),
+        ],
+        SELECT_POSITION: [
+            CallbackQueryHandler(select_employee_by_position, pattern='^sel_pos_'),
+            CallbackQueryHandler(show_employee_card_menu, pattern='^go_to_employee_card_menu$'),
+            CallbackQueryHandler(show_schedule_main_menu, pattern='^go_to_schedule_menu$'),
+        ],
+        SELECT_EMPLOYEE_FROM_LIST: [
+            CallbackQueryHandler(route_selected_employee, pattern='^sel_emp_'),
+            CallbackQueryHandler(start_select_position, pattern='^back_to_positions$'),
         ],
         
         # === ПОТОК: Добавление сотрудника ===
@@ -1667,7 +1818,10 @@ admin_conv = ConversationHandler(
         ADD_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_phone)],
         
         ADD_POSITION: [CallbackQueryHandler(get_position, pattern='^pos_')],
-        AWAITING_CONTACT: [MessageHandler(filters.CONTACT, get_contact), MessageHandler(filters.TEXT & ~filters.Regex("^❌ Отмена$"), wrong_input_in_contact_step)],
+        AWAITING_CONTACT: [
+            MessageHandler(filters.CONTACT, get_contact), 
+            MessageHandler(filters.TEXT & ~filters.Regex("^❌ Отмена$"), wrong_input_in_contact_step)
+            ],
         ADD_SCHEDULE_PATTERN: [CallbackQueryHandler(get_schedule_pattern, pattern='^sched_')],
         ADD_SCHEDULE_ANCHOR: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_schedule_anchor)],
         ADD_ROLE: [CallbackQueryHandler(get_role, pattern='^role_')],
@@ -1675,8 +1829,14 @@ admin_conv = ConversationHandler(
         ADD_START_TIME: [MessageHandler(filters.Regex(r'^\d{2}:\d{2}$'), get_start_time)],
         ADD_END_TIME: [MessageHandler(filters.Regex(r'^\d{2}:\d{2}$'), get_end_time)],
         
-        ADD_EMPLOYEE_MENU: [CallbackQueryHandler(select_field_menu, pattern='^action_edit$'), CallbackQueryHandler(confirm_add_employee, pattern='^action_confirm$')],
-        SELECT_FIELD: [CallbackQueryHandler(request_field_value, pattern='^field_'), CallbackQueryHandler(show_add_employee_menu, pattern='^back_to_menu$')],
+        ADD_EMPLOYEE_MENU: [
+            CallbackQueryHandler(select_field_menu, pattern='^action_edit$'), 
+            CallbackQueryHandler(confirm_add_employee, pattern='^action_confirm$')
+        ],
+        SELECT_FIELD: [
+            CallbackQueryHandler(request_field_value, pattern='^field_'), 
+            CallbackQueryHandler(show_add_employee_menu, pattern='^back_to_menu$')
+        ],
         
         GET_FIELD_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_field_value)],
         
@@ -1694,7 +1854,7 @@ admin_conv = ConversationHandler(
             CallbackQueryHandler(start_reset_2fa_confirm, pattern='^reset_2fa_start$'),
             CallbackQueryHandler(start_fire_employee, pattern='^fire_employee_start$'),
             CallbackQueryHandler(start_delete_employee, pattern='^delete_employee_start$'),
-            CallbackQueryHandler(start_edit_employee, pattern='^back_to_employee_list$'),
+            CallbackQueryHandler(start_select_position, pattern='^back_to_positions$'), 
         ],
         EDIT_DATA_SELECT_FIELD: [
             CallbackQueryHandler(request_edit_data_value, pattern='^edit_data_field_'),
@@ -1721,13 +1881,28 @@ admin_conv = ConversationHandler(
         ],
         EDIT_DATA_GET_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_edited_data_value)],
         EDIT_DATA_GET_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), save_data_with_reason)],
-        AWAITING_RESET_2FA_CONFIRM: [CallbackQueryHandler(finalize_reset_2fa, pattern='^confirm_reset_yes$'), CallbackQueryHandler(show_employee_edit_menu, pattern='^back_to_edit_menu$')],
+        AWAITING_RESET_2FA_CONFIRM: [
+            CallbackQueryHandler(finalize_reset_2fa, pattern='^confirm_reset_yes$'), 
+            CallbackQueryHandler(show_employee_edit_menu, pattern='^back_to_edit_menu$')
+        ],
         
         # === ПОТОК: Изменение графика ===
-        SCHEDULE_SELECT_MODE: [CallbackQueryHandler(schedule_select_mode, pattern='^sched_mode_'), CallbackQueryHandler(show_employee_edit_menu, pattern='^back_to_edit_menu$')],
-        SCHEDULE_SELECT_DATE_1: [CallbackQueryHandler(schedule_select_date_1, pattern='^cal_'), CallbackQueryHandler(schedule_start, pattern='^back_to_schedule_type_select$')],
-        SCHEDULE_SELECT_DATE_2: [CallbackQueryHandler(schedule_select_date_2, pattern='^cal_'), CallbackQueryHandler(schedule_start, pattern='^back_to_schedule_type_select$')],
-        SCHEDULE_SELECT_TYPE: [CallbackQueryHandler(schedule_process_type, pattern='^sched_type_'), CallbackQueryHandler(show_employee_edit_menu, pattern='^back_to_edit_menu$')],
+        SCHEDULE_SELECT_MODE: [
+            CallbackQueryHandler(schedule_select_mode, pattern='^sched_mode_'), 
+            CallbackQueryHandler(start_select_position, pattern='^back_to_edit_menu$')
+        ],
+        SCHEDULE_SELECT_DATE_1: [
+            CallbackQueryHandler(schedule_select_date_1, pattern='^cal_'), 
+            CallbackQueryHandler(schedule_start, pattern='^back_to_schedule_type_select$')
+        ],
+        SCHEDULE_SELECT_DATE_2: [
+            CallbackQueryHandler(schedule_select_date_2, pattern='^cal_'), 
+            CallbackQueryHandler(schedule_start, pattern='^back_to_schedule_type_select$')
+        ],
+        SCHEDULE_SELECT_TYPE: [
+            CallbackQueryHandler(schedule_process_type, pattern='^sched_type_'), 
+            CallbackQueryHandler(show_employee_edit_menu, pattern='^back_to_edit_menu$')
+        ],
         SCHEDULE_GET_START_TIME: [MessageHandler(filters.Regex(r'^\d{2}:\d{2}$'), schedule_get_start_time)],
         SCHEDULE_GET_END_TIME: [MessageHandler(filters.Regex(r'^\d{2}:\d{2}$'), schedule_finalize_work_time)],
         SCHEDULE_CONFIRM_DEAL_MOVE: [
@@ -1742,11 +1917,12 @@ admin_conv = ConversationHandler(
         ],
         VIEW_SCHEDULE_SELECT_PERIOD: [
             CallbackQueryHandler(view_schedule_generate_report, pattern='^view_period_'),
-            CallbackQueryHandler(view_schedule_start, pattern='^back_to_view_list$'),
+            CallbackQueryHandler(start_select_position, pattern='^back_to_positions$'),
+            CallbackQueryHandler(start_select_position, pattern='^back_to_view_list$'), 
         ],
         VIEW_SCHEDULE_SHOW_REPORT: [
             CallbackQueryHandler(view_schedule_back_to_period_select, pattern='^back_to_period_select$'),
-            CallbackQueryHandler(view_schedule_start, pattern='^back_to_view_list$'),
+            CallbackQueryHandler(start_select_position, pattern='^back_to_view_list$'), 
             CallbackQueryHandler(admin_panel, pattern='^back_to_admin_panel$'),
         ],
         VIEW_ABSENCES_SELECT_PERIOD: [

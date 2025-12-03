@@ -465,3 +465,21 @@ async def delete_employee_permanently(employee_id: int):
     await execute("DELETE FROM schedule_overrides WHERE employee_id = %s", (employee_id,))
     
     await execute("DELETE FROM employees WHERE id = %s", (employee_id,))
+
+async def get_unique_positions() -> List[str]:
+    """Возвращает список уникальных должностей, исключая пустые."""
+    query = """
+        SELECT DISTINCT position 
+        FROM employees 
+        WHERE termination_date IS NULL 
+          AND position IS NOT NULL 
+          AND position != ''
+        ORDER BY position
+    """
+    rows = await fetch_all(query)
+    return [row['position'] for row in rows]
+
+async def get_employees_by_position(position: str) -> List[Dict[str, Any]]:
+    """Возвращает список сотрудников конкретной должности."""
+    query = "SELECT id, full_name FROM employees WHERE position = %s AND termination_date IS NULL ORDER BY full_name"
+    return await fetch_all(query, (position,))

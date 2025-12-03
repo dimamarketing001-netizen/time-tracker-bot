@@ -221,8 +221,9 @@ async def find_employee_by_field(field: str, value: Any) -> Optional[Dict[str, A
     return await fetch_one(query, (value,))
 
 async def get_all_employees() -> List[Dict[str, Any]]:
-    """Возвращает список всех не уволенных сотрудников."""
-    query = "SELECT id, full_name, position FROM employees WHERE termination_date IS NULL ORDER BY full_name"
+    """Возвращает список всех не уволенных сотрудников с деталями."""
+
+    query = "SELECT id, full_name, position, city FROM employees WHERE termination_date IS NULL ORDER BY full_name"
     return await fetch_all(query)
 
 async def set_schedule_override(employee_id: int, work_date: str, is_day_off: bool, start_time: str = None, end_time: str = None):

@@ -1,5 +1,5 @@
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, InputFile
 from telegram.ext import (
     ContextTypes,
     CommandHandler,
@@ -14,6 +14,8 @@ from telegram.helpers import escape_markdown
 import calendar_helper
 from datetime import date, timedelta
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
+import csv
+import io
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,8 @@ ADMIN_MAIN_MENU = 0
 
     SELECT_POSITION,             
     SELECT_EMPLOYEE_FROM_LIST,
+
+    VIEW_ALL_SCHEDULE_SELECT_PERIOD,
 
     # Поток добавления сотрудника
     ADD_LAST_NAME, ADD_FIRST_NAME, ADD_MIDDLE_NAME, ADD_CITY, ADD_PHONE, ADD_POSITION, AWAITING_CONTACT, ADD_SCHEDULE_PATTERN, ADD_SCHEDULE_ANCHOR, ADD_ROLE,
@@ -63,7 +67,7 @@ ADMIN_MAIN_MENU = 0
 
     AWAITING_FIRE_EMPLOYEE_2FA,
     AWAITING_DELETE_EMPLOYEE_2FA,
-) = range(53)
+) = range(54)
 
 
 # ========== СЛОВАРИ И ВСПОМОГАТЕЛЬНЫЕ ДАННЫЕ ==========
@@ -131,7 +135,8 @@ async def show_schedule_main_menu(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     
     keyboard = [
-        [InlineKeyboardButton("📊 Посмотреть график по сотруднику", callback_data='admin_view_schedule_start')],
+        [InlineKeyboardButton("📊 По сотруднику", callback_data='admin_view_schedule_start')],
+        [InlineKeyboardButton("📥 График ВСЕХ (файл)", callback_data='view_all_schedule_start')],
         [InlineKeyboardButton("✏️ Изменить график сотрудника", callback_data='admin_edit_schedule_start')],
         [InlineKeyboardButton("🗓️ Посмотреть отгулы/больничные", callback_data='view_absences_start')],
         [InlineKeyboardButton("⬅️ Назад в главное меню", callback_data='back_to_admin_panel')],
@@ -141,8 +146,9 @@ async def show_schedule_main_menu(update: Update, context: ContextTypes.DEFAULT_
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return SCHEDULE_MAIN_MENU
-# ========== ЛОГИКА ДОБАВЛЕНИЯ СОТРУДНИКА ==========
 
+
+# ========== ЛОГИКА ДОБАВЛЕНИЯ СОТРУДНИКА ==========
 async def admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Отменяет админское действие, удаляет старое меню и возвращает главные кнопки."""
     user_id = update.effective_user.id
@@ -1409,7 +1415,114 @@ async def view_schedule_select_employee(update: Update, context: ContextTypes.DE
     await query.edit_message_text("Выберите период для просмотра:", reply_markup=InlineKeyboardMarkup(keyboard))
     return VIEW_SCHEDULE_SELECT_PERIOD
 
-# Файл: handlers/admin_handlers.py
+# --- ОТЧЕТ ПО ВСЕМ СОТРУДНИКАМ ---
+
+async def view_all_schedule_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Запрашивает период для общего отчета."""
+    query = update.callback_query
+    await query.answer()
+    
+    keyboard = [
+        [InlineKeyboardButton("Текущая неделя", callback_data='all_period_week')],
+        [InlineKeyboardButton("Текущий месяц", callback_data='all_period_month')],
+        [InlineKeyboardButton("Текущий квартал", callback_data='all_period_quarter')],
+        [InlineKeyboardButton("⬅️ Назад", callback_data='go_to_schedule_menu')],
+    ]
+    await query.edit_message_text(
+        "Выберите период для выгрузки общего графика (CSV):", 
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return VIEW_ALL_SCHEDULE_SELECT_PERIOD
+
+async def view_all_schedule_generate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Генерирует CSV файл с графиком всех сотрудников и отправляет его."""
+    query = update.callback_query
+    await query.answer("Генерация файла, подождите...") # Показываем часики
+    
+    # 1. Определяем даты
+    period = query.data.split('_')[2]
+    today = date.today()
+    
+    if period == 'week':
+        start_date = today - timedelta(days=today.weekday())
+        end_date = start_date + timedelta(days=6)
+    elif period == 'month':
+        start_date = today.replace(day=1)
+        next_month = start_date.replace(day=28) + timedelta(days=4)
+        end_date = next_month - timedelta(days=next_month.day)
+    elif period == 'quarter':
+        current_quarter = (today.month - 1) // 3 + 1
+        start_month = 3 * current_quarter - 2
+        start_date = date(today.year, start_month, 1)
+        end_month = start_month + 2
+        next_q = date(today.year, end_month, 28) + timedelta(days=4)
+        end_date = next_q - timedelta(days=next_q.day)
+
+    # 2. Получаем всех сотрудников
+    employees = await db_manager.get_all_employees()
+    
+    # 3. Подготавливаем CSV в памяти
+    # Используем StringIO для создания текстового буфера
+    output = io.StringIO()
+    # delimiter=';' удобнее для Excel в русскоязычной локали
+    writer = csv.writer(output, delimiter=';')
+    
+    # Заголовки
+    writer.writerow(['Город', 'Должность', 'ФИО', 'Дата', 'День недели', 'Время работы', 'Статус'])
+    
+    # 4. Проходим по каждому сотруднику и считаем график
+    for emp in employees:
+        schedule = await db_manager.get_employee_schedule_for_period(emp['id'], start_date, end_date)
+        
+        for day in schedule:
+            dt = day['date']
+            date_str = dt.strftime('%d.%m.%Y')
+            weekday_str = WEEKDAY_NAMES_RU[dt.weekday()]
+            
+            # Форматирование времени
+            start_t = day['start_time']
+            end_t = day['end_time']
+            time_str = ""
+            if start_t and end_t:
+                # Обрезаем секунды если это timedelta или строка
+                s_str = str(start_t)[:5]
+                e_str = str(end_t)[:5]
+                time_str = f"{s_str}-{e_str}"
+            else:
+                time_str = "-"
+                
+            writer.writerow([
+                emp.get('city', '-'),
+                emp.get('position', '-'),
+                emp['full_name'],
+                date_str,
+                weekday_str,
+                time_str,
+                day['status']
+            ])
+            
+    # 5. Отправляем файл
+    output.seek(0)
+    # Преобразуем в байты с BOM (utf-8-sig) для корректного отображения кириллицы в Excel
+    bio = io.BytesIO(output.getvalue().encode('utf-8-sig'))
+    bio.name = f"Schedule_{period}_{today.strftime('%Y%m%d')}.csv"
+    
+    await context.bot.send_document(
+        chat_id=update.effective_chat.id,
+        document=bio,
+        caption=f"📅 График всех сотрудников за период: {start_date.strftime('%d.%m')} - {end_date.strftime('%d.%m')}"
+    )
+    
+    # Возвращаем меню
+    keyboard = [[InlineKeyboardButton("⬅️ Назад в меню графиков", callback_data='go_to_schedule_menu')]]
+    
+    # Т.к. send_document это новое сообщение, редактируем старое меню, чтобы не висело
+    await query.edit_message_text(
+        "Файл сформирован и отправлен.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    
+    return VIEW_ALL_SCHEDULE_SELECT_PERIOD
 
 async def view_schedule_generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Генерация и отправка отчета с кнопками навигации."""
@@ -1796,6 +1909,7 @@ admin_conv = ConversationHandler(
         ],
         SCHEDULE_MAIN_MENU: [
             CallbackQueryHandler(start_select_position, pattern='^admin_view_schedule_start$'),
+            CallbackQueryHandler(view_all_schedule_start, pattern='^view_all_schedule_start$'),
             CallbackQueryHandler(start_select_position, pattern='^admin_edit_schedule_start$'),
             CallbackQueryHandler(view_absences_start, pattern='^view_absences_start$'),
             CallbackQueryHandler(admin_panel, pattern='^back_to_admin_panel$'),
@@ -1808,6 +1922,10 @@ admin_conv = ConversationHandler(
         SELECT_EMPLOYEE_FROM_LIST: [
             CallbackQueryHandler(route_selected_employee, pattern='^sel_emp_'),
             CallbackQueryHandler(start_select_position, pattern='^back_to_positions$'),
+        ],
+        VIEW_ALL_SCHEDULE_SELECT_PERIOD: [
+            CallbackQueryHandler(view_all_schedule_generate, pattern='^all_period_'),
+            CallbackQueryHandler(show_schedule_main_menu, pattern='^go_to_schedule_menu$'),
         ],
         
         # === ПОТОК: Добавление сотрудника ===

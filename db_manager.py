@@ -3,7 +3,8 @@ import logging
 from config import DB_HOST, DB_PORT, DB_USER, DB_PASS, DB_NAME
 from typing import Optional, Dict, Any, List
 from datetime import date, timedelta, time, datetime
-import pytz 
+import pytz
+import json
 
 TARGET_TIMEZONE = pytz.timezone('Asia/Yekaterinburg')
 logger = logging.getLogger(__name__)
@@ -487,9 +488,9 @@ async def get_employees_by_position(position: str) -> List[Dict[str, Any]]:
     query = "SELECT id, full_name FROM employees WHERE position = %s AND termination_date IS NULL ORDER BY full_name"
     return await fetch_all(query, (position,))
 
-async def get_today_schedule(employee_id: int) -> Dict[str, Any]:
+async def get_today_schedule(employee_id: int) -> Optional[Dict[str, Any]]:
     """Возвращает информацию о графике сотрудника на СЕГОДНЯ (по времени Екб)."""
-    # Берем дату в нужном часовом поясе
+    # ВАЖНО: Используем таймзону, чтобы 'сегодня' было корректным
     today = datetime.now(TARGET_TIMEZONE).date() 
     
     schedule_list = await get_employee_schedule_for_period(employee_id, today, today)
@@ -497,3 +498,21 @@ async def get_today_schedule(employee_id: int) -> Dict[str, Any]:
     if schedule_list:
         return schedule_list[0]
     return None
+
+async def save_employee_request(employee_id: int, request_type: str, data_json: str):
+    """Сохраняет новую заявку."""
+    query = "INSERT INTO employee_requests (employee_id, request_type, data_json, status) VALUES (%s, %s, %s, 'pending')"
+    await execute(query, (employee_id, request_type, data_json))
+
+async def get_last_pending_request(employee_id: int, request_type: str = 'early_leave') -> Optional[Dict[str, Any]]:
+    """Получает последнюю активную заявку сотрудника."""
+    query = """
+        SELECT * FROM employee_requests 
+        WHERE employee_id = %s AND request_type = %s AND status = 'pending' 
+        ORDER BY id DESC LIMIT 1
+    """
+    return await fetch_one(query, (employee_id, request_type))
+
+async def update_request_status(request_id: int, status: str):
+    """Обновляет статус заявки."""
+    await execute("UPDATE employee_requests SET status = %s WHERE id = %s", (status, request_id))

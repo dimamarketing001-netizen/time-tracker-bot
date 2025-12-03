@@ -16,6 +16,7 @@ from datetime import date, timedelta
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
 import csv
 import io
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,7 @@ ADMIN_MAIN_MENU = 0
 
     # Состояние для СБ
     AWAITING_SB_2FA, 
+    SB_CHANGE_TIME,
 
     # Родственники сотрудника
     RELATIVES_MENU, REL_ADD_TYPE, REL_ADD_LAST_NAME, REL_ADD_FIRST_NAME, REL_ADD_MIDDLE_NAME, REL_ADD_PHONE, REL_ADD_BIRTH_DATE, REL_ADD_WORKPLACE,
@@ -67,7 +69,7 @@ ADMIN_MAIN_MENU = 0
 
     AWAITING_FIRE_EMPLOYEE_2FA,
     AWAITING_DELETE_EMPLOYEE_2FA,
-) = range(54)
+) = range(55)
 
 
 # ========== СЛОВАРИ И ВСПОМОГАТЕЛЬНЫЕ ДАННЫЕ ==========
@@ -1889,11 +1891,11 @@ async def finalize_delete_employee(update: Update, context: ContextTypes.DEFAULT
         return AWAITING_DELETE_EMPLOYEE_2FA
 
 async def sb_approve_early_leave(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка кнопки 'Согласовать' для раннего ухода."""
+    """СБ нажал 'Согласовать'."""
     query = update.callback_query
-    
-    # Проверка прав (можно использовать декоратор или проверку внутри)
     user_id = query.from_user.id
+    
+    # Проверка прав
     sb_employee = await db_manager.get_employee_by_telegram_id(user_id)
     if not sb_employee or sb_employee['role'].lower() not in ['security', 'admin']:
         await query.answer("Нет прав!", show_alert=True)
@@ -1904,28 +1906,51 @@ async def sb_approve_early_leave(update: Update, context: ContextTypes.DEFAULT_T
     # data: approve_early_{emp_id}
     employee_id = int(query.data.split('_')[2])
     
-    # 1. Обновляем статус
+    # 1. Получаем данные заявки из БД
+    request = await db_manager.get_last_pending_request(employee_id, 'early_leave')
+    
+    # 2. Обновляем статус сотрудника (выпускаем его)
     await db_manager.update_employee_status(employee_id, 'offline')
     
-    # 2. Логируем
+    log_reason = 'Ранний уход (согласовано)'
+    
+    # 3. Если в заявке есть изменение графика — применяем его
+    if request:
+        data = json.loads(request['data_json'])
+        mode = data.get('mode')
+        
+        if mode == 'custom':
+            # Применяем изменение графика (override)
+            date_start = data.get('date_start')
+            date_end = data.get('date_end')
+            
+            # В данном примере мы помечаем эти дни как "отгул/выходной" или меняем время?
+            # Если пользователь указал время (например, с 11:00 до 12:00), 
+            # БД schedule_overrides поддерживает только start_time и end_time РАБОЧЕГО дня.
+            # Если это частичное отсутствие, мы просто разрешаем выход (/off).
+            # Если это полные дни:
+            if not data.get('time_start'): # Если времени нет, значит полные дни
+                 await db_manager.set_schedule_override_for_period(
+                    employee_id, date_start, date_end, is_day_off=True
+                )
+                 log_reason = f"Отгул: {date_start}-{date_end}"
+        
+        # Закрываем заявку
+        await db_manager.update_request_status(request['id'], 'approved')
+
+    # 4. Логируем
     await db_manager.log_approved_time_event(
-        employee_id=employee_id, event_type='clock_out', reason='Ранний уход',
+        employee_id=employee_id, event_type='clock_out', reason=log_reason,
         approver_id=sb_employee['id'], approval_reason='Согласование СБ'
     )
     
-    # 3. Обновляем сообщение в топике
-    await query.edit_message_text(f"✅ Заявка согласована (СБ: {sb_employee['full_name']}).\nСотрудник переведен в статус offline.")
+    await query.edit_message_text(f"✅ Заявка согласована (СБ: {sb_employee['full_name']}).\nСотрудник отпущен.")
     
-    # 4. Уведомляем сотрудника
     target_emp = await db_manager.get_employee_by_id(employee_id)
     if target_emp:
         try:
-            await context.bot.send_message(
-                chat_id=target_emp['personal_telegram_id'], 
-                text="✅ Ваш ранний уход согласован. Смена завершена."
-            )
-        except Exception:
-            pass
+            await context.bot.send_message(target_emp['personal_telegram_id'], "✅ Ваш запрос согласован.")
+        except: pass
 
 async def sb_reject_early_leave(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка кнопки 'Не согласовать'."""
@@ -1940,17 +1965,95 @@ async def sb_reject_early_leave(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     employee_id = int(query.data.split('_')[2])
     
+    # Закрываем заявку в БД
+    request = await db_manager.get_last_pending_request(employee_id, 'early_leave')
+    if request:
+        await db_manager.update_request_status(request['id'], 'rejected')
+
     await query.edit_message_text(f"❌ Заявка отклонена (СБ: {sb_employee['full_name']}).")
     
     target_emp = await db_manager.get_employee_by_id(employee_id)
     if target_emp:
         try:
+            await context.bot.send_message(target_emp['personal_telegram_id'], "❌ Ваш запрос отклонен.")
+        except: pass
+
+# --- ЛОГИКА "ИЗМЕНИТЬ ВРЕМЯ" (Для СБ) ---
+
+async def sb_change_time_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """СБ нажал 'Изменить время'. Запрашиваем ввод."""
+    query = update.callback_query
+    user_id = query.from_user.id
+    sb_employee = await db_manager.get_employee_by_telegram_id(user_id)
+    
+    if not sb_employee or sb_employee['role'].lower() not in ['security', 'admin']:
+        await query.answer("Нет прав!", show_alert=True)
+        return ConversationHandler.END
+
+    await query.answer()
+    employee_id = int(query.data.split('_')[2])
+    context.user_data['sb_edit_emp_id'] = employee_id
+    
+    # Сохраняем ID сообщения, чтобы потом его обновить
+    context.user_data['sb_msg_id'] = query.message.message_id
+    context.user_data['sb_chat_id'] = query.message.chat.id
+
+    # Спрашиваем СБ
+    # Мы используем force_reply, чтобы ответ СБ пришел именно сюда (если это супергруппа)
+    await context.bot.send_message(
+        chat_id=query.message.chat.id,
+        text=f"✏️ Введите новые параметры (даты/время) и комментарий для сотрудника.\nНапример: 'Разрешено уйти в 17:00, завтра отработать час'.",
+        reply_to_message_id=query.message.message_id
+    )
+    return SB_CHANGE_TIME
+
+async def sb_change_time_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Получаем текст от СБ, меняем статус и уведомляем."""
+    text = update.message.text
+    employee_id = context.user_data.get('sb_edit_emp_id')
+    sb_user_id = update.effective_user.id
+    sb_employee = await db_manager.get_employee_by_telegram_id(sb_user_id)
+    
+    if not employee_id:
+        await update.message.reply_text("Ошибка контекста.")
+        return ConversationHandler.END
+
+    # 1. Выпускаем сотрудника (так как СБ разрешил, но с условиями)
+    await db_manager.update_employee_status(employee_id, 'offline')
+    
+    # 2. Логируем с комментарием СБ
+    await db_manager.log_approved_time_event(
+        employee_id=employee_id, event_type='clock_out', reason='Изменено СБ',
+        approver_id=sb_employee['id'], approval_reason=f"СБ изменил: {text}"
+    )
+    
+    # 3. Закрываем заявку
+    request = await db_manager.get_last_pending_request(employee_id, 'early_leave')
+    if request:
+        await db_manager.update_request_status(request['id'], 'changed_by_sb')
+
+    # 4. Обновляем исходное сообщение в топике
+    try:
+        await context.bot.edit_message_text(
+            chat_id=context.user_data['sb_chat_id'],
+            message_id=context.user_data['sb_msg_id'],
+            text=f"✏️ Условия изменены СБ ({sb_employee['full_name']}).\nКомментарий: {text}\nСотрудник отпущен."
+        )
+    except: pass
+    
+    await update.message.reply_text("✅ Изменения приняты, сотрудник уведомлен.")
+
+    # 5. Уведомляем сотрудника
+    target_emp = await db_manager.get_employee_by_id(employee_id)
+    if target_emp:
+        try:
             await context.bot.send_message(
                 chat_id=target_emp['personal_telegram_id'], 
-                text="❌ Ваш запрос на ранний уход отклонен. Пожалуйста, продолжите работу."
+                text=f"⚠️ Ваша заявка изменена СБ.\nКомментарий: {text}\nСмена завершена."
             )
-        except Exception:
-            pass
+        except: pass
+        
+    return ConversationHandler.END
 
 # ========== РЕГИСТРАЦИЯ ConversationHandler'ов ==========
 admin_conv = ConversationHandler(
@@ -2139,9 +2242,22 @@ sb_approval_handler = ConversationHandler(
     per_user=True,
 )
 
+sb_action_handler = ConversationHandler(
+    entry_points=[
+        CallbackQueryHandler(sb_change_time_start, pattern='^change_early_')
+    ],
+    states={
+        SB_CHANGE_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, sb_change_time_save)]
+    },
+    fallbacks=[CommandHandler('cancel', admin_cancel)], 
+    per_user=True 
+)
+
 admin_handlers = [
     admin_conv,          
-    sb_approval_handler, 
+    sb_approval_handler,
+    sb_action_handler,
+    
     CallbackQueryHandler(sb_approve_early_leave, pattern='^approve_early_'),
     CallbackQueryHandler(sb_reject_early_leave, pattern='^reject_early_'),
     CallbackQueryHandler(sb_reject_request, pattern='^reject_sb_')

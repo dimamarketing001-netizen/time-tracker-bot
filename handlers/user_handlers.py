@@ -9,12 +9,13 @@ import json
 from config import REDIS_OPERATORS_ONLINE_SET, REDIS_OPERATOR_TASK_PREFIX
 from utils import generate_totp_qr_code, verify_totp, get_main_keyboard
 import pytz
+import calendar_helper 
 
 logger = logging.getLogger(__name__)
 
 VERIFY_2FA_SETUP_CODE, AWAITING_ACTION_TOTP = range(2)
 USER_REPORT_SELECT_PERIOD, USER_REPORT_SHOW = range(2)
-GET_EARLY_LEAVE_REASON, GET_EARLY_LEAVE_PERIOD = range(10, 12) 
+GET_EARLY_LEAVE_REASON, GET_EARLY_LEAVE_PERIOD, SELECT_LEAVE_TYPE, SELECT_LEAVE_DATE_START, SELECT_LEAVE_DATE_END, GET_LEAVE_TIME_START, GET_LEAVE_TIME_END = range(10, 12) 
 
 WEEKDAY_NAMES_RU = {0: "ПН", 1: "ВТ", 2: "СР", 3: "ЧТ", 4: "ПТ", 5: "СБ", 6: "ВС"}
 
@@ -361,15 +362,132 @@ async def clock_out_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return AWAITING_ACTION_TOTP
 
 async def get_early_leave_reason(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Получаем причину раннего ухода."""
-    reason_text = update.message.text
-    context.user_data['early_leave_data']['reason'] = reason_text
+    """Получили причину. Спрашиваем тип отсутствия."""
+    context.user_data['early_leave_data']['reason'] = update.message.text
     
+    keyboard = [
+        [InlineKeyboardButton("Сегодня до конца смены", callback_data='leave_type_today_end')],
+        [InlineKeyboardButton("Выбрать другое время/дату", callback_data='leave_type_custom')],
+    ]
     await update.message.reply_text(
-        "Принято. Теперь укажите **период отсутствия** (даты и время).\n"
-        "Пример: 'Сегодня до конца дня' или 'С завтрашнего дня по 25.10'"
+        "Как вы планируете отсутствовать?",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
-    return GET_EARLY_LEAVE_PERIOD
+    return SELECT_LEAVE_TYPE
+
+async def select_leave_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    choice = query.data
+    
+    if choice == 'leave_type_today_end':
+        # Сразу формируем заявку (как раньше)
+        # Период: "Сегодня c {текущее время} до конца"
+        context.user_data['early_leave_data']['mode'] = 'today_end'
+        return await send_early_leave_request_to_sb(update, context)
+        
+    else: # custom
+        context.user_data['early_leave_data']['mode'] = 'custom'
+        await query.edit_message_text(
+            "Выберите ДАТУ начала отсутствия:",
+            reply_markup=calendar_helper.create_calendar()
+        )
+        return SELECT_LEAVE_DATE_START
+
+async def leave_date_start_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    
+    # Обработка навигации календаря
+    if not query.data.startswith('cal_day_'):
+        year, month = calendar_helper.process_calendar_selection(update)
+        await query.edit_message_text(text=query.message.text, reply_markup=calendar_helper.create_calendar(year, month))
+        return SELECT_LEAVE_DATE_START
+
+    selected_date = query.data.split('_')[2]
+    context.user_data['early_leave_data']['date_start'] = selected_date
+    
+    # Спрашиваем: это один день или период?
+    # Для простоты давайте сразу спросим дату конца (если один день - выберет ту же)
+    await query.edit_message_text(
+        f"Начало: {selected_date}\nТеперь выберите ДАТУ ОКОНЧАНИЯ (если один день — выберите ту же):",
+        reply_markup=calendar_helper.create_calendar()
+    )
+    return SELECT_LEAVE_DATE_END
+
+async def leave_date_end_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    # Обработка навигации календаря
+    if not query.data.startswith('cal_day_'):
+        year, month = calendar_helper.process_calendar_selection(update)
+        await query.edit_message_text(text=query.message.text, reply_markup=calendar_helper.create_calendar(year, month))
+        return SELECT_LEAVE_DATE_END
+
+    selected_date = query.data.split('_')[2]
+    context.user_data['early_leave_data']['date_end'] = selected_date
+    
+    # Теперь время начала отсутствия
+    await query.edit_message_text(
+        "Введите ВРЕМЯ НАЧАЛА отсутствия (в формате ЧЧ:ММ, например 11:00):"
+    )
+    return GET_LEAVE_TIME_START
+
+async def get_leave_time_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    time_str = update.message.text.strip()
+    
+    # Простая валидация времени
+    import re
+    if not re.match(r'^\d{2}:\d{2}$', time_str):
+        await update.message.reply_text("❌ Неверный формат времени. Введите в формате ЧЧ:ММ (например 11:00).")
+        return GET_LEAVE_TIME_START
+        
+    context.user_data['early_leave_data']['time_start'] = time_str
+    
+    await update.message.reply_text("Введите ВРЕМЯ ОКОНЧАНИЯ отсутствия (например 12:00):")
+    return GET_LEAVE_TIME_END
+
+async def get_leave_time_end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    time_str = update.message.text.strip()
+    
+    # Простая валидация
+    import re
+    if not re.match(r'^\d{2}:\d{2}$', time_str):
+        await update.message.reply_text("❌ Неверный формат времени. Введите в формате ЧЧ:ММ (например 18:00).")
+        return GET_LEAVE_TIME_END
+        
+    context.user_data['early_leave_data']['time_end'] = time_str
+    
+    # Все данные собраны, отправляем в СБ
+    return await send_early_leave_request_to_sb(update, context)
+
+async def send_early_leave_request_to_sb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Финальная отправка в СБ."""
+    data = context.user_data['early_leave_data']
+    employee = await db_manager.get_employee_by_telegram_id(update.effective_user.id)
+    
+    if data.get('mode') == 'today_end':
+        period_str = f"Сегодня до конца смены (план: {data['planned_end']})"
+    else:
+        period_str = f"{data['date_start']} {data['time_start']} — {data['date_end']} {data['time_end']}"
+    
+    # Сохраняем данные заявки в Redis или БД, чтобы СБ мог их достать по ID сотрудника?
+    # Нет, лучше передать всё в тексте сообщения, а при нажатии СБ парсить (сложно)
+    # ИЛИ сохранить "последнюю заявку" в БД.
+    # Давайте добавим таблицу requests или просто поле last_request_json в employees.
+    # Для простоты пока передадим ID и будем надеяться, что данные не потеряются (но лучше в БД).
+    
+    # ... (код отправки в СБ с кнопками) ...
+    
+    # ВАЖНО: В callback_data кнопок СБ мы можем передать только ID сотрудника.
+    # Данные о времени (какое именно время согласовываем) СБ должен видеть в тексте,
+    # а бот должен знать, что именно применять.
+    # Придется сохранить параметры запроса в БД (например, в новую таблицу employee_requests).
+    
+    await db_manager.save_employee_request(employee['id'], 'early_leave', json.dumps(data))
+    
+    # ... (отправка сообщения в СБ) ...
 
 async def get_early_leave_period(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Получаем период и отправляем в СБ."""

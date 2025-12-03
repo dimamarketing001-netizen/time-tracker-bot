@@ -8,24 +8,19 @@ from telegram.ext import (
     filters,
     ContextTypes,
     CallbackQueryHandler,
-    InlineQueryHandler
 )
-from config import BOT_TOKEN
+from config import BOT_TOKEN, REDIS_HOST, REDIS_PORT
 import db_manager
 from scheduler import start_scheduler
-import uuid
-import json
 import redis
-from config import BOT_TOKEN, REDIS_HOST, REDIS_PORT
 from handlers import user_handlers, admin_handlers, auth_handlers
 from utils import get_main_keyboard 
 
-# Настройка логирования для отладки
+# Настройка логирования
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
-# Уменьшаем "шум" от библиотеки httpx, которую использует python-telegram-bot
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
@@ -49,9 +44,7 @@ async def post_init(application: Application):
     await db_manager.reset_all_topic_ids()
     start_scheduler(application)
 
-
 async def post_shutdown(application: Application):
-    """Очистка при остановке."""
     await db_manager.close_pool()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -59,7 +52,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     employee = await db_manager.get_employee_by_telegram_id(user_id)
     role = employee.get('role', '').lower() if employee else 'unknown'
     
-    # Используем функцию из utils для получения клавиатуры
     reply_markup = get_main_keyboard(role)
 
     await update.message.reply_text(
@@ -90,7 +82,7 @@ def main() -> None:
         },
         fallbacks=[CommandHandler('cancel', auth_handlers.cancel)],
         per_user=True,
-        allow_reentry=True # ВАЖНО: Позволяет перезапустить команду, если завис
+        allow_reentry=True
     )
     application.add_handler(on_handler)
 
@@ -105,19 +97,28 @@ def main() -> None:
                 CallbackQueryHandler(user_handlers.clock_out_callback, pattern='^off_reason_'),
                 CallbackQueryHandler(user_handlers.request_deal_approval_from_sb, pattern='^request_deal_approval_')
             ],
+            
+            # --- НОВЫЕ СОСТОЯНИЯ ДЛЯ РАННЕГО УХОДА ---
             user_handlers.GET_EARLY_LEAVE_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, user_handlers.get_early_leave_reason)],
+            
             user_handlers.SELECT_LEAVE_TYPE: [
                 CallbackQueryHandler(user_handlers.select_leave_type, pattern='^leave_type_')
             ],
+            
             user_handlers.SELECT_LEAVE_DATE_START: [
                 CallbackQueryHandler(user_handlers.leave_date_start_callback, pattern='^cal_')
             ],
+            
             user_handlers.SELECT_LEAVE_DATE_END: [
                 CallbackQueryHandler(user_handlers.leave_date_end_callback, pattern='^cal_')
             ],
+            
             user_handlers.GET_LEAVE_TIME_START: [MessageHandler(filters.TEXT & ~filters.COMMAND, user_handlers.get_leave_time_start)],
             user_handlers.GET_LEAVE_TIME_END: [MessageHandler(filters.TEXT & ~filters.COMMAND, user_handlers.get_leave_time_end)],
+            
             user_handlers.GET_EARLY_LEAVE_PERIOD: [MessageHandler(filters.TEXT & ~filters.COMMAND, user_handlers.get_early_leave_period)],
+            # ----------------------------------------
+
             auth_handlers.AWAITING_ACTION_TOTP: [
                 MessageHandler(filters.Regex(r'^\d{6}$'), auth_handlers.verify_action_totp)
             ],
@@ -127,7 +128,7 @@ def main() -> None:
         },
         fallbacks=[CommandHandler('cancel', auth_handlers.cancel)],
         per_user=True,
-        allow_reentry=True # ВАЖНО: Позволяет перезапустить команду, если завис
+        allow_reentry=True
     )
     application.add_handler(off_handler)
 
@@ -152,9 +153,8 @@ def main() -> None:
             MessageHandler(filters.Regex(f"^({BTN_START_SHIFT}|{BTN_END_SHIFT}|{BTN_ADMIN})$"), user_handlers.my_schedule_close)
         ],
         per_user=True,
-        allow_reentry=True # Позволяет открыть отчет заново, если он завис
+        allow_reentry=True
     )
-    
     application.add_handler(my_schedule_handler)
 
     # 5. Прочие команды

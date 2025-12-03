@@ -255,6 +255,8 @@ async def clock_out_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_id = query.from_user.id
     employee = await db_manager.get_employee_by_telegram_id(user_id)
     
+    # Формат: (new_status, reason, limit, time_window_for_cashier_check)
+    # Если проверка кассира не нужна, ставим 0 или None
     reason_map = {
         'off_reason_break': ('on_break', 'Перерыв', config.BREAK_LIMIT, 15),
         'off_reason_lunch': ('on_lunch', 'Обед', config.LUNCH_LIMIT, 70),
@@ -262,6 +264,11 @@ async def clock_out_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         'off_reason_endday': ('offline', 'Завершение дня', float('inf'), 1440),
     }
     
+    # Распаковываем все 4 значения
+    if query.data not in reason_map:
+        await query.edit_message_text("Ошибка: Неизвестная причина.")
+        return ConversationHandler.END
+
     new_status, reason, limit, time_window = reason_map[query.data]
 
     # 1. Проверка лимитов (перерывы, обеды)
@@ -282,7 +289,6 @@ async def clock_out_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"{deal_infos}\n\n"
                 "Вы можете запросить согласование у Службы Безопасности\\."
             )
-            # approve_deal_{id}_{reason_key}
             callback_data = f"request_deal_approval_{employee['id']}_{query.data.split('_')[-1]}"
             keyboard = [[InlineKeyboardButton("Согласовать с СБ", callback_data=callback_data)]]
             await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='MarkdownV2')
@@ -292,11 +298,9 @@ async def clock_out_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if reason == 'Инкассация':
         await query.edit_message_text("Для выхода на инкассацию требуется подтверждение от СБ. Запрос отправлен.")
         
-        # Создаем новую тему в чате СБ
         topic_name = f"Согласование Инкассации: {employee['full_name']} {datetime.now().strftime('%d.%m %H:%M')}"
         topic = await context.bot.create_forum_topic(chat_id=config.SECURITY_CHAT_ID, name=topic_name)
         
-        # Отправляем запрос в созданную тему
         keyboard = [[
             InlineKeyboardButton("✅ Согласовать", callback_data=f"approve_sb_inkas_{employee['id']}"),
             InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_sb_inkas_{employee['id']}")
@@ -308,11 +312,13 @@ async def clock_out_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
-        return ConversationHandler.END # Завершаем диалог для кассира, он ждет ответа
+        return ConversationHandler.END 
     
+    # --- ЛОГИКА РАННЕГО УХОДА ---
     if reason == 'Завершение дня':
         today_schedule = await db_manager.get_today_schedule(employee['id'])
         
+        # Если сегодня рабочий день
         if today_schedule and today_schedule['status'] == 'Работа':
             end_time_val = today_schedule['end_time']
             
@@ -322,33 +328,27 @@ async def clock_out_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             planned_end_dt = None
             
             if end_time_val:
-                # Преобразуем end_time_val в time (он может быть timedelta или str)
+                # Преобразуем end_time_val в time
                 et = None
                 if isinstance(end_time_val, str):
-                    try:
-                        et = datetime.strptime(end_time_val, '%H:%M:%S').time()
-                    except:
-                        try:
-                            et = datetime.strptime(end_time_val, '%H:%M').time()
-                        except:
-                            pass
+                    try: et = datetime.strptime(end_time_val, '%H:%M:%S').time()
+                    except: 
+                        try: et = datetime.strptime(end_time_val, '%H:%M').time()
+                        except: pass
                 elif isinstance(end_time_val, timedelta):
                     total_seconds = int(end_time_val.total_seconds())
                     hours = total_seconds // 3600
                     minutes = (total_seconds % 3600) // 60
-                    et = datetime.time(hour=hours, minute=minutes)
-                elif isinstance(end_time_val, datetime.time): # Если вдруг уже time
+                    et = time(hour=hours, minute=minutes)
+                elif isinstance(end_time_val, time):
                      et = end_time_val
 
                 if et:
                     # Создаем datetime с правильной датой и таймзоной
                     planned_end_dt = now.replace(hour=et.hour, minute=et.minute, second=0, microsecond=0)
             
-            # Если плановое время определено и сейчас РАНЬШЕ
+            # Если плановое время определено и сейчас РАНЬШЕ (с запасом 5 минут)
             if planned_end_dt:
-                # Проверка: если смена переходит через полночь (например до 02:00), логика сложнее,
-                # но для дневных смен (до 23:00) это сработает.
-                
                 if now < planned_end_dt - timedelta(minutes=5):
                     # Сохраняем данные строкой
                     context.user_data['early_leave_data'] = {

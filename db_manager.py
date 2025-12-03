@@ -484,3 +484,13 @@ async def get_employees_by_position(position: str) -> List[Dict[str, Any]]:
     """Возвращает список сотрудников конкретной должности."""
     query = "SELECT id, full_name FROM employees WHERE position = %s AND termination_date IS NULL ORDER BY full_name"
     return await fetch_all(query, (position,))
+
+async def get_today_schedule(employee_id: int) -> Dict[str, Any]:
+    """Возвращает информацию о графике сотрудника на СЕГОДНЯ."""
+    today = date.today()
+    # Используем нашу умную функцию, которая учитывает 2/2, 6/1 и т.д.
+    schedule_list = await get_employee_schedule_for_period(employee_id, today, today)
+    
+    if schedule_list:
+        return schedule_list[0] # Возвращаем словарь дня
+    return None

@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime,date, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup,ReplyKeyboardRemove
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
+from telegram.helpers import escape_markdown
 from telegram.ext import ContextTypes, ConversationHandler
 from .auth_handlers import VERIFY_2FA_SETUP_CODE, AWAITING_ACTION_TOTP, start_2fa_setup
 import db_manager, config
@@ -12,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 VERIFY_2FA_SETUP_CODE, AWAITING_ACTION_TOTP = range(2)
 USER_REPORT_SELECT_PERIOD, USER_REPORT_SHOW = range(2)
+GET_EARLY_LEAVE_REASON, GET_EARLY_LEAVE_PERIOD = range(10, 12) 
 
 WEEKDAY_NAMES_RU = {0: "ПН", 1: "ВТ", 2: "СР", 3: "ЧТ", 4: "ПТ", 5: "СБ", 6: "ВС"}
 
@@ -275,7 +277,6 @@ async def clock_out_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return 'AWAITING_REASON'
 
     # 3. Запрос на согласование инкассации
-    # --- ИСПРАВЛЕНИЕ: Теперь создаем отдельную тему ---
     if reason == 'Инкассация':
         await query.edit_message_text("Для выхода на инкассацию требуется подтверждение от СБ. Запрос отправлен.")
         
@@ -296,12 +297,101 @@ async def clock_out_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             parse_mode='Markdown'
         )
         return ConversationHandler.END # Завершаем диалог для кассира, он ждет ответа
+    
+    if reason == 'Завершение дня':
+        # 1. Получаем график на сегодня
+        today_schedule = await db_manager.get_today_schedule(employee['id'])
+        
+        # Если график есть и это рабочий день
+        if today_schedule and today_schedule['status'] == 'Работа':
+            end_time_val = today_schedule['end_time']
+            
+            # Приводим к datetime для сравнения
+            now = datetime.now()
+            planned_end_dt = None
+            
+            if isinstance(end_time_val, str):
+                try:
+                    et = datetime.strptime(end_time_val, '%H:%M:%S').time()
+                    planned_end_dt = now.replace(hour=et.hour, minute=et.minute, second=0)
+                except:
+                    pass # Ошибка парсинга
+            
+            # Если плановое время есть и сейчас РАНЬШЕ (с небольшим запасом, например 5 минут)
+            if planned_end_dt and now < planned_end_dt - timedelta(minutes=5):
+                # Сохраняем данные для следующего шага
+                context.user_data['early_leave_data'] = {
+                    'planned_end': end_time_val,
+                    'actual_end': now.strftime('%H:%M')
+                }
+                
+                await query.edit_message_text(
+                    f"⚠️ Вы завершаете смену раньше времени (план: {end_time_val}).\n\n"
+                    f"Пожалуйста, укажите **причину раннего ухода** (отправьте текстовое сообщение):",
+                    parse_mode='Markdown'
+                )
+                return GET_EARLY_LEAVE_REASON
 
     # 4. Если все проверки пройдены - запрашиваем 2FA у сотрудника
     context.user_data['pending_action'] = {'type': 'clock_out', 'status': new_status, 'reason': reason}
     await query.edit_message_text("Для подтверждения действия введите 6-значный код из Authenticator.")
+
     return AWAITING_ACTION_TOTP
 
+async def get_early_leave_reason(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Получаем причину раннего ухода."""
+    reason_text = update.message.text
+    context.user_data['early_leave_data']['reason'] = reason_text
+    
+    await update.message.reply_text(
+        "Принято. Теперь укажите **период отсутствия** (даты и время).\n"
+        "Пример: 'Сегодня до конца дня' или 'С завтрашнего дня по 25.10'"
+    )
+    return GET_EARLY_LEAVE_PERIOD
+
+async def get_early_leave_period(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Получаем период и отправляем в СБ."""
+    period_text = update.message.text
+    user_data = context.user_data['early_leave_data']
+    user_id = update.effective_user.id
+    employee = await db_manager.get_employee_by_telegram_id(user_id)
+    
+    # Формируем заявку для СБ
+    await update.message.reply_text("Заявка на ранний уход отправлена в СБ. Ожидайте решения.")
+    
+    # Отправляем в СБ
+    topic_name = f"Ранний уход: {employee['full_name']} {datetime.now().strftime('%d.%m')}"
+    topic = await context.bot.create_forum_topic(chat_id=config.SECURITY_CHAT_ID, name=topic_name)
+    
+    # Кнопки для СБ
+    # approve_early_{emp_id}
+    # reject_early_{emp_id}
+    # change_early_{emp_id}
+    keyboard = [
+        [InlineKeyboardButton("✅ Согласовать", callback_data=f"approve_early_{employee['id']}")],
+        [InlineKeyboardButton("❌ Не согласовать", callback_data=f"reject_early_{employee['id']}")],
+        [InlineKeyboardButton("✏️ Изменить время", callback_data=f"change_early_{employee['id']}")]
+    ]
+    
+    msg_text = (
+        f"⚠️ *Заявка на ранний уход*\n\n"
+        f"Сотрудник: *{escape_markdown(employee['full_name'], version=2)}*\n"
+        f"Должность: {escape_markdown(employee['position'], version=2)}\n"
+        f"Плановый конец: {user_data['planned_end']}\n"
+        f"Текущее время: {user_data['actual_end']}\n\n"
+        f"*Причина:* {escape_markdown(user_data['reason'], version=2)}\n"
+        f"*Запрашиваемый период:* {escape_markdown(period_text, version=2)}"
+    )
+    
+    await context.bot.send_message(
+        chat_id=config.SECURITY_CHAT_ID,
+        message_thread_id=topic.message_thread_id,
+        text=msg_text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='MarkdownV2'
+    )
+    
+    return ConversationHandler.END
 
 async def request_deal_approval_from_sb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает нажатие кнопки 'Согласовать с СБ' при конфликте сделок."""

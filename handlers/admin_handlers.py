@@ -1887,7 +1887,71 @@ async def finalize_delete_employee(update: Update, context: ContextTypes.DEFAULT
     else:
         await update.message.reply_text("❌ Неверный код 2FA. Попробуйте снова.", reply_markup=get_main_keyboard(role))
         return AWAITING_DELETE_EMPLOYEE_2FA
+
+async def sb_approve_early_leave(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка кнопки 'Согласовать' для раннего ухода."""
+    query = update.callback_query
     
+    # Проверка прав (можно использовать декоратор или проверку внутри)
+    user_id = query.from_user.id
+    sb_employee = await db_manager.get_employee_by_telegram_id(user_id)
+    if not sb_employee or sb_employee['role'].lower() not in ['security', 'admin']:
+        await query.answer("Нет прав!", show_alert=True)
+        return
+
+    await query.answer()
+    
+    # data: approve_early_{emp_id}
+    employee_id = int(query.data.split('_')[2])
+    
+    # 1. Обновляем статус
+    await db_manager.update_employee_status(employee_id, 'offline')
+    
+    # 2. Логируем
+    await db_manager.log_approved_time_event(
+        employee_id=employee_id, event_type='clock_out', reason='Ранний уход',
+        approver_id=sb_employee['id'], approval_reason='Согласование СБ'
+    )
+    
+    # 3. Обновляем сообщение в топике
+    await query.edit_message_text(f"✅ Заявка согласована (СБ: {sb_employee['full_name']}).\nСотрудник переведен в статус offline.")
+    
+    # 4. Уведомляем сотрудника
+    target_emp = await db_manager.get_employee_by_id(employee_id)
+    if target_emp:
+        try:
+            await context.bot.send_message(
+                chat_id=target_emp['personal_telegram_id'], 
+                text="✅ Ваш ранний уход согласован. Смена завершена."
+            )
+        except Exception:
+            pass
+
+async def sb_reject_early_leave(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка кнопки 'Не согласовать'."""
+    query = update.callback_query
+    
+    user_id = query.from_user.id
+    sb_employee = await db_manager.get_employee_by_telegram_id(user_id)
+    if not sb_employee or sb_employee['role'].lower() not in ['security', 'admin']:
+        await query.answer("Нет прав!", show_alert=True)
+        return
+
+    await query.answer()
+    employee_id = int(query.data.split('_')[2])
+    
+    await query.edit_message_text(f"❌ Заявка отклонена (СБ: {sb_employee['full_name']}).")
+    
+    target_emp = await db_manager.get_employee_by_id(employee_id)
+    if target_emp:
+        try:
+            await context.bot.send_message(
+                chat_id=target_emp['personal_telegram_id'], 
+                text="❌ Ваш запрос на ранний уход отклонен. Пожалуйста, продолжите работу."
+            )
+        except Exception:
+            pass
+
 # ========== РЕГИСТРАЦИЯ ConversationHandler'ов ==========
 admin_conv = ConversationHandler(
     entry_points=[
@@ -2076,7 +2140,9 @@ sb_approval_handler = ConversationHandler(
 )
 
 admin_handlers = [
-    admin_conv,
-    sb_approval_handler,
+    admin_conv,          
+    sb_approval_handler, 
+    CallbackQueryHandler(sb_approve_early_leave, pattern='^approve_early_'),
+    CallbackQueryHandler(sb_reject_early_leave, pattern='^reject_early_'),
     CallbackQueryHandler(sb_reject_request, pattern='^reject_sb_')
 ]

@@ -105,6 +105,8 @@ def main() -> None:
                 CallbackQueryHandler(user_handlers.clock_out_callback, pattern='^off_reason_'),
                 CallbackQueryHandler(user_handlers.request_deal_approval_from_sb, pattern='^request_deal_approval_')
             ],
+            user_handlers.GET_EARLY_LEAVE_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, user_handlers.get_early_leave_reason)],
+            user_handlers.GET_EARLY_LEAVE_PERIOD: [MessageHandler(filters.TEXT & ~filters.COMMAND, user_handlers.get_early_leave_period)],
             auth_handlers.AWAITING_ACTION_TOTP: [
                 MessageHandler(filters.Regex(r'^\d{6}$'), auth_handlers.verify_action_totp)
             ],
@@ -136,9 +138,6 @@ def main() -> None:
         },
         fallbacks=[
             CommandHandler('cancel', user_handlers.my_schedule_close),
-            # Если пользователь нажмет другую кнопку меню во время просмотра, 
-            # ConversationHandler может перехватить это. 
-            # Добавим выход по нажатию основных кнопок:
             MessageHandler(filters.Regex(f"^({BTN_START_SHIFT}|{BTN_END_SHIFT}|{BTN_ADMIN})$"), user_handlers.my_schedule_close)
         ],
         per_user=True,

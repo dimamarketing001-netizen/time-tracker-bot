@@ -64,7 +64,7 @@ async def my_schedule_generate(update: Update, context: ContextTypes.DEFAULT_TYP
     period = query.data.split('_')[2]
     employee_id = context.user_data['my_schedule_emp_id']
     
-    # ... (логика определения дат period == 'week' и т.д. остается прежней) ...
+    # --- Логика определения дат (без изменений) ---
     today = date.today()
     if period == 'week':
         start_date = today - timedelta(days=today.weekday())
@@ -88,54 +88,61 @@ async def my_schedule_generate(update: Update, context: ContextTypes.DEFAULT_TYP
         f"Период: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}\n\n"
     )
     
-    # Расширяем таблицу, статус может быть длинным из-за комментария
+    # Вспомогательная функция для безопасного форматирования времени
+    def safe_format_time(val):
+        if not val:
+            return "--:--"
+        if isinstance(val, str):
+            # Если строка "09:00:00", берем первые 5 символов
+            return val[:5]
+        if isinstance(val, timedelta):
+            # Если timedelta, переводим в часы:минуты
+            total_seconds = int(val.total_seconds())
+            hours = total_seconds // 3600
+            minutes = (total_seconds % 3600) // 60
+            return f"{hours:02}:{minutes:02}"
+        if isinstance(val, (time, datetime)):
+            return val.strftime('%H:%M')
+        return str(val)[:5]
+
+    # Вернули колонку Статус
     table = "```\n"
-    table += "| Дата      | День | Время/Инфо      |\n"
-    table += "|-----------|------|-----------------|\n"
+    table += "| Дата      | Дн | Время       | Статус       |\n"
+    table += "|-----------|----|-------------|--------------|\n"
     
     for day in schedule_data:
         dt = day['date']
-        date_str = dt.strftime('%d.%m.%y')
+        date_str = dt.strftime('%d.%m') # Чуть короче для экономии места
         weekday_str = WEEKDAY_NAMES_RU[dt.weekday()]
         
         start_t = day['start_time']
         end_t = day['end_time']
+        status_str = day['status']
+        comment = day.get('comment')
         
-        # Основная строка времени
+        # Формируем строку времени
         if start_t and end_t:
-            if isinstance(start_t, timedelta): start_t = (datetime.min + start_t).time()
-            if isinstance(end_t, timedelta): end_t = (datetime.min + end_t).time()
-            time_str = f"{start_t.strftime('%H:%M')}-{end_t.strftime('%H:%M')}"
+            s_str = safe_format_time(start_t)
+            e_str = safe_format_time(end_t)
+            time_str = f"{s_str}-{e_str}"
         else:
             time_str = "-"
 
-        status_str = day['status']
-        comment = day.get('comment')
+        # Обрезаем статус если длинный
+        if len(status_str) > 12:
+            status_str = status_str[:11] + "."
 
-        # Если есть комментарий (например "Отсутствие 11-12"), показываем его вместо статуса "Работа" или добавляем
-        info_str = time_str
+        # Основная строка таблицы
+        table += f"| {date_str:<9} | {weekday_str:<2} | {time_str:<11} | {status_str:<12} |\n"
         
-        # Если это стандартный рабочий день, но есть коммент - выводим коммент во второй строке или вместо статуса
-        # Для компактности таблицы сделаем так:
-        # Если есть комментарий, пишем его. Если нет, пишем время и статус.
-        
-        row_content = f"{time_str}"
+        # Если есть комментарий, выводим его отдельной строкой для читаемости
         if comment:
-             # Если строка слишком длинная, переносим? В Markdown таблице сложно.
-             # Просто заменим время на "* " если оно есть в комменте, или добавим.
-             pass
-
-        table += f"| {date_str:<9} | {weekday_str:<4} | {row_content:<15} |\n"
+            # Обрезаем очень длинные комментарии
+            if len(comment) > 35: 
+                comment = comment[:34] + ".."
+            table += f"| ↳ {comment:<44} |\n"
+            table += "|-----------|----|-------------|--------------|\n"
         
-        # Если есть комментарий, добавляем его отдельной строкой в таблицу для читаемости
-        if comment:
-             table += f"|           |      | {comment:<15} |\n"
-        elif status_str != 'Работа' and time_str == '-':
-             # Если выходной/отгул
-             table += f"|           |      | {status_str:<15} |\n"
-        
-        table += "|-----------|------|-----------------|\n"
-
     table += "```"
     
     keyboard = [
@@ -143,11 +150,17 @@ async def my_schedule_generate(update: Update, context: ContextTypes.DEFAULT_TYP
         [InlineKeyboardButton("❌ Закрыть", callback_data='my_report_close')]
     ]
     
-    await query.edit_message_text(
-        header + table, 
-        reply_markup=InlineKeyboardMarkup(keyboard), 
-        parse_mode='Markdown'
-    )
+    try:
+        await query.edit_message_text(
+            header + table, 
+            reply_markup=InlineKeyboardMarkup(keyboard), 
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        logger.error(f"Error sending report: {e}")
+        # Если вдруг Markdown сломался из-за символов, шлем без него
+        await query.message.reply_text(header + table, reply_markup=InlineKeyboardMarkup(keyboard))
+        
     return USER_REPORT_SHOW
 
 async def my_schedule_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:

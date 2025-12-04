@@ -8,7 +8,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-from utils import security_required, verify_totp, get_main_keyboard
+from utils import security_required, verify_totp, get_main_keyboard, generate_table_image
 import db_manager as db_manager
 from telegram.helpers import escape_markdown
 import calendar_helper
@@ -17,6 +17,7 @@ from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
 import csv
 import io
 import json
+
 
 logger = logging.getLogger(__name__)
 
@@ -1511,7 +1512,6 @@ async def view_all_schedule_generate(update: Update, context: ContextTypes.DEFAU
     return VIEW_ALL_SCHEDULE_SELECT_PERIOD
 
 async def view_schedule_generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Генерация и отправка отчета с кнопками навигации."""
     query = update.callback_query
     await query.answer("Формирую отчет...")
     
@@ -1520,6 +1520,7 @@ async def view_schedule_generate_report(update: Update, context: ContextTypes.DE
     employee = await db_manager.get_employee_by_id(employee_id)
     today = date.today()
 
+    # ... (логика дат week/month/quarter без изменений) ...
     if period == 'week':
         start_date = today - timedelta(days=today.weekday())
         end_date = start_date + timedelta(days=6)
@@ -1537,27 +1538,16 @@ async def view_schedule_generate_report(update: Update, context: ContextTypes.DE
         
     schedule_data = await db_manager.get_employee_schedule_for_period(employee_id, start_date, end_date)
     
-    header = (
-        f"График работы: {employee['full_name']}\n"
-        f"Период: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}\n\n"
-    )
-
-    # Функция форматирования времени (локальная)
-    def safe_fmt(val):
-        if not val: return "-"
-        if isinstance(val, str): return val[:5]
-        if isinstance(val, timedelta): return str(val)[:5]
-        if isinstance(val, (time, datetime)): return val.strftime('%H:%M')
-        return str(val)[:5]
-
-    table = "```\n"
-    # Сокращенные заголовки для экономии места
-    table += "| Дата/Дн  | Время | Стат | Коммент    |\n"
-    table += "|----------|-------|------|------------|\n"
+    # Готовим данные для таблицы
+    headers = ['Дата', 'День', 'Время', 'Статус', 'Комментарий']
+    rows = []
     
+    def safe_fmt(val): return str(val)[:5] if val else "-"
+
     for day in schedule_data:
         dt = day['date']
-        date_col = f"{dt.strftime('%d.%m')} {WEEKDAY_NAMES_RU[dt.weekday()]}"
+        date_str = dt.strftime('%d.%m')
+        weekday = WEEKDAY_NAMES_RU[dt.weekday()]
         
         start_t = day['start_time']
         end_t = day['end_time']
@@ -1568,25 +1558,28 @@ async def view_schedule_generate_report(update: Update, context: ContextTypes.DE
         else:
             time_str = "-"
             
-        # Сокращаем статус
-        status_map = {'Работа': 'Раб', 'Выходной': 'Вых', 'Отгул/Больничный': 'Отг'}
-        status_short = status_map.get(day['status'], day['status'][:3])
+        rows.append([date_str, weekday, time_str, day['status'], comment])
         
-        # Обрезаем комментарий
-        if len(comment) > 10: comment = comment[:9] + "."
-        
-        table += f"| {date_col:<8} | {time_str:<5} | {status_short:<4} | {comment:<10} |\n"
-        
-    table += "```"
+    title = f"Сотрудник: {employee['full_name']}\nПериод: {start_date.strftime('%d.%m')} - {end_date.strftime('%d.%m')}"
+    image_bio = generate_table_image(headers, rows, title)
     
     keyboard = [
         [InlineKeyboardButton("⬅️ Другой период", callback_data='back_to_period_select')],
         [InlineKeyboardButton("👤 Другой сотрудник", callback_data='back_to_view_list')],
-        [InlineKeyboardButton("🏠 В главное меню", callback_data='back_to_admin_panel')],
+        [InlineKeyboardButton("🏠 Меню", callback_data='back_to_admin_panel')],
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await query.edit_message_text(header + table, reply_markup=reply_markup, parse_mode='Markdown')
+    # Удаляем старое текстовое меню и шлем фото
+    try:
+        await query.delete_message()
+    except:
+        pass
+
+    await context.bot.send_photo(
+        chat_id=update.effective_chat.id,
+        photo=image_bio,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
     return VIEW_SCHEDULE_SHOW_REPORT
 
 # ========== ОБЩИЕ ФУНКЦИИ И ХЕНДЛЕРЫ ==========
@@ -1714,14 +1707,13 @@ async def view_absences_start(update: Update, context: ContextTypes.DEFAULT_TYPE
     return VIEW_ABSENCES_SELECT_PERIOD
 
 async def view_absences_generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Генерация отчета по отгулам в виде таблицы."""
     query = update.callback_query
     await query.answer("Формирую отчет...")
     
     period = query.data.split('_')[2]
     today = date.today()
     
-    # ... (логика дат period == week/month/quarter такая же) ...
+    # ... (логика дат без изменений) ...
     if period == 'week':
         start_date = today - timedelta(days=today.weekday())
         end_date = start_date + timedelta(days=6)
@@ -1737,57 +1729,58 @@ async def view_absences_generate_report(update: Update, context: ContextTypes.DE
         next_q = date(today.year, end_month, 28) + timedelta(days=4)
         end_date = next_q - timedelta(days=next_q.day)
     
-    # !!! Здесь нужно убедиться, что get_all_schedule_overrides_for_period возвращает колонку comment
-    # Для этого нужно обновить запрос в db_manager (сделаем это ниже, если не сделали в шаге 2)
-    # Предполагаем, что в db_manager.py:get_all_schedule_overrides_for_period уже добавлен `so.comment` в SELECT
-    
     overrides_data = await db_manager.get_all_schedule_overrides_for_period(start_date, end_date)
     
     if not overrides_data:
         await query.edit_message_text(
-            f"За период с {start_date.strftime('%d.%m')} по {end_date.strftime('%d.%m')} изменений в графиках не найдено.",
+            f"За период {start_date.strftime('%d.%m')} - {end_date.strftime('%d.%m')} изменений нет.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data='go_to_schedule_menu')]])
         )
         return VIEW_ABSENCES_SHOW_REPORT
 
-    report_by_employee = {}
-    for row in overrides_data:
-        if row['full_name'] not in report_by_employee:
-            report_by_employee[row['full_name']] = []
-        report_by_employee[row['full_name']].append(row)
-        
-    report_text = f"*Отчет по изменениям*\n*Период: {start_date.strftime('%d.%m')} - {end_date.strftime('%d.%m')}*\n\n"
+    # Готовим таблицу для картинки
+    # Добавим колонку "Сотрудник"
+    headers = ['Сотрудник', 'Дата', 'Статус/Время', 'Комментарий']
+    rows = []
     
     def safe_fmt(val): return str(val)[:5] if val else ""
 
-    for name, records in report_by_employee.items():
-        report_text += f"👤 *{escape_markdown(name)}*\n"
-        table = "```\n"
-        table += "| Дата   | Статус/Время    | Коммент    |\n"
-        table += "|--------|-----------------|------------|\n"
+    for record in overrides_data:
+        # Фамилия и инициалы (чтобы влезло)
+        full_name = record['full_name']
+        parts = full_name.split()
+        short_name = full_name
+        if len(parts) >= 2:
+            short_name = f"{parts[0]} {parts[1][0]}."
+        
+        dt = record['work_date']
+        date_str = dt.strftime('%d.%m')
+        comment = record.get('comment') or ""
 
-        for record in records:
-            dt = record['work_date']
-            date_str = dt.strftime('%d.%m')
+        if record['is_day_off']:
+            info_str = "Отгул"
+        else:
+            start_t = safe_fmt(record['start_time'])
+            end_t = safe_fmt(record['end_time'])
+            info_str = f"{start_t}-{end_t}"
             
-            comment = record.get('comment') or ""
-            if len(comment) > 10: comment = comment[:9] + "."
+        rows.append([short_name, date_str, info_str, comment])
 
-            if record['is_day_off']:
-                info_str = "Отгул"
-            else:
-                start_t = safe_fmt(record['start_time'])
-                end_t = safe_fmt(record['end_time'])
-                info_str = f"{start_t}-{end_t}"
-
-            table += f"| {date_str:<6} | {info_str:<15} | {comment:<10} |\n"
-            
-        table += "```\n"
-        report_text += table
-
+    title = f"Изменения в графике: {start_date.strftime('%d.%m')} - {end_date.strftime('%d.%m')}"
+    image_bio = generate_table_image(headers, rows, title)
+    
     keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data='go_to_schedule_menu')]]
     
-    await query.edit_message_text(report_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    try:
+        await query.delete_message()
+    except:
+        pass
+
+    await context.bot.send_photo(
+        chat_id=update.effective_chat.id,
+        photo=image_bio,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
     return VIEW_ABSENCES_SHOW_REPORT
 
 async def start_fire_employee(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:

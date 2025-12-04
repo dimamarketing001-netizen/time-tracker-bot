@@ -10,6 +10,7 @@ from config import REDIS_OPERATORS_ONLINE_SET, REDIS_OPERATOR_TASK_PREFIX
 from utils import generate_totp_qr_code, verify_totp, get_main_keyboard
 import pytz
 import calendar_helper 
+from utils import generate_table_image 
 
 logger = logging.getLogger(__name__)
 
@@ -57,14 +58,14 @@ async def my_schedule_start(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return USER_REPORT_SELECT_PERIOD
 
 async def my_schedule_generate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Генерирует отчет для пользователя."""
+    """Генерирует отчет-картинку для пользователя."""
     query = update.callback_query
-    await query.answer("Загружаю график...")
+    await query.answer("Генерация графика...")
     
     period = query.data.split('_')[2]
     employee_id = context.user_data['my_schedule_emp_id']
     
-    # --- Логика дат ---
+    # --- Логика дат (без изменений) ---
     today = date.today()
     if period == 'week':
         start_date = today - timedelta(days=today.weekday())
@@ -83,74 +84,57 @@ async def my_schedule_generate(update: Update, context: ContextTypes.DEFAULT_TYP
         
     schedule_data = await db_manager.get_employee_schedule_for_period(employee_id, start_date, end_date)
     
-    header = (
-        f"📅 *Мой график*\n"
-        f"Период: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}\n\n"
-    )
+    # Подготовка данных для таблицы
+    headers = ['Дата', 'День', 'Время', 'Статус', 'Комментарий']
+    rows = []
     
-    # Функция для форматирования времени
-    def safe_format_time(val):
+    def safe_fmt(val):
         if not val: return "-"
         if isinstance(val, str): return val[:5]
-        if isinstance(val, timedelta):
-            total_seconds = int(val.total_seconds())
-            hours = total_seconds // 3600
-            minutes = (total_seconds % 3600) // 60
-            return f"{hours:02}:{minutes:02}"
+        if isinstance(val, timedelta): return str(val)[:5]
         if isinstance(val, (time, datetime)): return val.strftime('%H:%M')
         return str(val)[:5]
 
-    # Таблица. Объединяем Дату и День, сокращаем Статус
-    table = "```\n"
-    table += "| Дата/Дн  | Время | Статус | Инфо       |\n"
-    table += "|----------|-------|--------|------------|\n"
-    
     for day in schedule_data:
         dt = day['date']
-        # Формат: 05.12 ПН
-        date_col = f"{dt.strftime('%d.%m')} {WEEKDAY_NAMES_RU[dt.weekday()]}"
+        date_str = dt.strftime('%d.%m')
+        weekday = WEEKDAY_NAMES_RU[dt.weekday()]
         
         start_t = day['start_time']
         end_t = day['end_time']
-        raw_status = day['status']
+        status = day['status']
         comment = day.get('comment') or ""
         
-        # Время
         if start_t and end_t:
-            s_str = safe_format_time(start_t)
-            e_str = safe_format_time(end_t)
-            time_str = f"{s_str}-{e_str}"
+            time_str = f"{safe_fmt(start_t)}-{safe_fmt(end_t)}"
         else:
             time_str = "-"
-
-        # Сокращаем статус для компактности
-        status_map = {
-            'Работа': 'Раб',
-            'Выходной': 'Вых',
-            'Отгул/Больничный': 'Отг',
-            'Уволен': 'Увол'
-        }
-        # Если статус нестандартный, берем первые 4 буквы
-        status_short = status_map.get(raw_status, raw_status[:4])
-
-        # Обрезаем комментарий, если очень длинный
-        if len(comment) > 12:
-            comment = comment[:11] + "."
-        
-        table += f"| {date_col:<8} | {time_str:<5} | {status_short:<6} | {comment:<10} |\n"
-        
-    table += "```"
+            
+        rows.append([date_str, weekday, time_str, status, comment])
+    
+    # Генерируем картинку
+    title = f"График работы: {start_date.strftime('%d.%m')} - {end_date.strftime('%d.%m')}"
+    image_bio = generate_table_image(headers, rows, title)
     
     keyboard = [
         [InlineKeyboardButton("⬅️ Выбрать другой период", callback_data='back_to_my_period_select')],
         [InlineKeyboardButton("❌ Закрыть", callback_data='my_report_close')]
     ]
     
-    await query.edit_message_text(
-        header + table, 
-        reply_markup=InlineKeyboardMarkup(keyboard), 
-        parse_mode='Markdown'
+    # ВАЖНО: Мы не можем превратить текстовое сообщение в фото через edit.
+    # Поэтому удаляем старое сообщение (меню или лоадер) и шлем новое фото.
+    try:
+        await query.delete_message()
+    except:
+        pass # Если не удалось удалить, не страшно
+
+    await context.bot.send_photo(
+        chat_id=update.effective_chat.id,
+        photo=image_bio,
+        caption=f"Ваш график за период {start_date.strftime('%d.%m')} - {end_date.strftime('%d.%m')}",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
+    
     return USER_REPORT_SHOW
 
 async def my_schedule_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:

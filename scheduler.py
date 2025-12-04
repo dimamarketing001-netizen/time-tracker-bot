@@ -7,6 +7,7 @@ from telegram.helpers import escape_markdown
 import db_manager
 import config
 import pytz
+from utils import get_timezone_for_city
 
 logger = logging.getLogger(__name__)
 
@@ -15,11 +16,11 @@ logger = logging.getLogger(__name__)
 TARGET_TIMEZONE = pytz.timezone('Asia/Yekaterinburg')
 
 async def check_lateness_job(context: ContextTypes.DEFAULT_TYPE):
-    logger.info("Running lateness check job...")
+    logger.info("Running lateness check job (Multi-timezone)...")
     
-    # Получаем сотрудников для проверки
+    # 1. Получаем сотрудников (добавили поле city в выборку!)
     employees = await db_manager.fetch_all("""
-        SELECT id, full_name, position, default_start_time, status, 
+        SELECT id, full_name, city, position, default_start_time, status, 
                schedule_pattern, schedule_start_date, hire_date, last_lateness_alert_date
         FROM employees 
         WHERE termination_date IS NULL 
@@ -27,13 +28,14 @@ async def check_lateness_job(context: ContextTypes.DEFAULT_TYPE):
           AND (last_lateness_alert_date IS NULL OR last_lateness_alert_date != CURDATE())
     """)
     
-    # Получаем текущее время в нужном часовом поясе
-    now = datetime.now(TARGET_TIMEZONE)
-    today_date = now.date()
-
     for emp in employees:
         try:
-            # 1. Проверяем график на СЕГОДНЯ
+            # 2. Определяем ЛОКАЛЬНОЕ время сотрудника
+            tz = get_timezone_for_city(emp.get('city'))
+            emp_now = datetime.now(tz)
+            today_date = emp_now.date()
+            
+            # 3. Получаем график на ЕГО текущий день
             schedule_info_list = await db_manager.get_employee_schedule_for_period(emp['id'], today_date, today_date)
             
             if not schedule_info_list:
@@ -41,7 +43,7 @@ async def check_lateness_job(context: ContextTypes.DEFAULT_TYPE):
                 
             today_schedule = schedule_info_list[0]
             
-            # Если выходной - пропускаем
+            # Если выходной/отгул - пропускаем
             if today_schedule['status'] in ['Выходной', 'Отгул/Больничный']:
                 continue
                 
@@ -49,7 +51,7 @@ async def check_lateness_job(context: ContextTypes.DEFAULT_TYPE):
             if not start_time_val:
                 continue
 
-            # Приведение типов времени
+            # Приведение start_time к datetime.time
             start_time = None
             if isinstance(start_time_val, timedelta):
                 total_seconds = int(start_time_val.total_seconds())
@@ -67,17 +69,18 @@ async def check_lateness_job(context: ContextTypes.DEFAULT_TYPE):
             if not start_time:
                 continue
 
-            # 2. Сравниваем время
-            # Создаем planned_start_dt в том же часовом поясе, что и now
-            planned_start_dt = now.replace(hour=start_time.hour, minute=start_time.minute, second=0, microsecond=0)
+            # 4. Сравниваем время
+            # Создаем planned_start_dt в ТОМ ЖЕ часовом поясе, что и emp_now
+            planned_start_dt = emp_now.replace(hour=start_time.hour, minute=start_time.minute, second=0, microsecond=0)
             
             grace_period = timedelta(minutes=config.LATENESS_GRACE_PERIOD_MIN)
             
-            if now > planned_start_dt + grace_period:
+            # Если текущее время сотрудника больше чем план + опоздание
+            if emp_now > planned_start_dt + grace_period:
                 await send_lateness_alert(context, emp, start_time)
                 
         except Exception as e:
-            logger.error(f"Error checking lateness for {emp.get('full_name')}: {e}")
+            logger.error(f"Error checking lateness for {emp.get('full_name')} ({emp.get('city')}): {e}")
 
 async def send_lateness_alert(context, emp, start_time):
     try:

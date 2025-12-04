@@ -10,7 +10,7 @@ from config import REDIS_OPERATORS_ONLINE_SET, REDIS_OPERATOR_TASK_PREFIX
 from utils import generate_totp_qr_code, verify_totp, get_main_keyboard
 import pytz
 import calendar_helper 
-from utils import generate_table_image 
+from utils import generate_table_image, get_timezone_for_city
 
 logger = logging.getLogger(__name__)
 
@@ -327,14 +327,16 @@ async def clock_out_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     # --- ЛОГИКА РАННЕГО УХОДА ---
     if reason == 'Завершение дня':
+        # get_today_schedule теперь умный и вернет график на основе часового пояса сотрудника
         today_schedule = await db_manager.get_today_schedule(employee['id'])
         
         # Если сегодня рабочий день
         if today_schedule and today_schedule['status'] == 'Работа':
             end_time_val = today_schedule['end_time']
             
-            # Получаем текущее время в правильном часовом поясе
-            now = datetime.now(TARGET_TIMEZONE) 
+            # 1. Определяем ЛОКАЛЬНОЕ время сотрудника
+            tz = get_timezone_for_city(employee.get('city'))
+            emp_now = datetime.now(tz)
             
             planned_end_dt = None
             
@@ -356,19 +358,20 @@ async def clock_out_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
                 if et:
                     # Создаем datetime с правильной датой и таймзоной
-                    planned_end_dt = now.replace(hour=et.hour, minute=et.minute, second=0, microsecond=0)
+                    planned_end_dt = emp_now.replace(hour=et.hour, minute=et.minute, second=0, microsecond=0)
             
-            # Если плановое время определено и сейчас РАНЬШЕ (с запасом 5 минут)
+            # Если плановое время определено и сейчас (у сотрудника) РАНЬШЕ (с запасом 5 минут)
             if planned_end_dt:
-                if now < planned_end_dt - timedelta(minutes=5):
+                if emp_now < planned_end_dt - timedelta(minutes=5):
                     # Сохраняем данные строкой
                     context.user_data['early_leave_data'] = {
                         'planned_end': str(end_time_val),
-                        'actual_end': now.strftime('%H:%M')
+                        'actual_end': emp_now.strftime('%H:%M')
                     }
                     
                     await query.edit_message_text(
-                        f"⚠️ Вы завершаете смену раньше времени (план: {end_time_val}).\n\n"
+                        f"⚠️ В вашем городе ({employee.get('city', 'не указан')}) сейчас {emp_now.strftime('%H:%M')}.\n"
+                        f"Вы завершаете смену раньше времени (план: {end_time_val}).\n\n"
                         f"Пожалуйста, укажите **причину раннего ухода** (отправьте текстовое сообщение):",
                         parse_mode='Markdown'
                     )

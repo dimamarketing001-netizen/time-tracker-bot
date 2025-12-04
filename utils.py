@@ -8,8 +8,30 @@ import db_manager as db_manager
 import matplotlib
 import matplotlib.pyplot as plt
 import io
+import pytz
+from config import CITY_TIMEZONES, DEFAULT_TIMEZONE
 
 matplotlib.use('Agg') 
+
+def get_timezone_for_city(city_name: str) -> pytz.timezone:
+    """
+    Возвращает объект timezone на основе названия города.
+    Если город не найден, возвращает дефолтный (Москва).
+    """
+    if not city_name:
+        return pytz.timezone(DEFAULT_TIMEZONE)
+    
+    # Нормализация: убираем пробелы, делаем 'Москва' из 'москва '
+    clean_city = city_name.strip().title()
+    
+    # Ищем прямое совпадение
+    tz_str = CITY_TIMEZONES.get(clean_city)
+    
+    if not tz_str:
+        # Попытка найти дефолт, если города нет в списке
+        return pytz.timezone(DEFAULT_TIMEZONE)
+        
+    return pytz.timezone(tz_str)
 
 def generate_table_image(headers: list, data: list, title: str = "") -> io.BytesIO:
     """

@@ -5,6 +5,7 @@ from typing import Optional, Dict, Any, List
 from datetime import date, timedelta, time, datetime
 import pytz
 import json
+from utils import get_timezone_for_city 
 
 TARGET_TIMEZONE = pytz.timezone('Asia/Yekaterinburg')
 logger = logging.getLogger(__name__)
@@ -467,11 +468,22 @@ async def get_employees_by_position(position: str) -> List[Dict[str, Any]]:
     return await fetch_all(query, (position,))
 
 async def get_today_schedule(employee_id: int) -> Optional[Dict[str, Any]]:
-    """Возвращает информацию о графике сотрудника на СЕГОДНЯ (по времени Екб)."""
-    # ВАЖНО: Используем таймзону, чтобы 'сегодня' было корректным
-    today = datetime.now(TARGET_TIMEZONE).date() 
+    """
+    Возвращает информацию о графике сотрудника на ЕГО ТЕКУЩУЮ дату 
+    (в зависимости от часового пояса города).
+    """
+    # 1. Получаем данные сотрудника, чтобы узнать город
+    employee = await get_employee_by_id(employee_id)
+    if not employee:
+        return None
+        
+    # 2. Определяем часовой пояс и текущую дату для этого сотрудника
+    tz = get_timezone_for_city(employee.get('city'))
+    employee_now = datetime.now(tz)
+    today_date = employee_now.date()
     
-    schedule_list = await get_employee_schedule_for_period(employee_id, today, today)
+    # 3. Получаем график на эту дату
+    schedule_list = await get_employee_schedule_for_period(employee_id, today_date, today_date)
     
     if schedule_list:
         return schedule_list[0]

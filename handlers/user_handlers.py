@@ -64,7 +64,7 @@ async def my_schedule_generate(update: Update, context: ContextTypes.DEFAULT_TYP
     period = query.data.split('_')[2]
     employee_id = context.user_data['my_schedule_emp_id']
     
-    # --- Логика определения дат (без изменений) ---
+    # --- Логика дат ---
     today = date.today()
     if period == 'week':
         start_date = today - timedelta(days=today.weekday())
@@ -88,39 +88,34 @@ async def my_schedule_generate(update: Update, context: ContextTypes.DEFAULT_TYP
         f"Период: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}\n\n"
     )
     
-    # Вспомогательная функция для безопасного форматирования времени
+    # Функция для форматирования времени
     def safe_format_time(val):
-        if not val:
-            return "--:--"
-        if isinstance(val, str):
-            # Если строка "09:00:00", берем первые 5 символов
-            return val[:5]
+        if not val: return "-"
+        if isinstance(val, str): return val[:5]
         if isinstance(val, timedelta):
-            # Если timedelta, переводим в часы:минуты
             total_seconds = int(val.total_seconds())
             hours = total_seconds // 3600
             minutes = (total_seconds % 3600) // 60
             return f"{hours:02}:{minutes:02}"
-        if isinstance(val, (time, datetime)):
-            return val.strftime('%H:%M')
+        if isinstance(val, (time, datetime)): return val.strftime('%H:%M')
         return str(val)[:5]
 
-    # Вернули колонку Статус
+    # Таблица. Объединяем Дату и День, сокращаем Статус
     table = "```\n"
-    table += "| Дата      | Дн | Время       | Статус       |\n"
-    table += "|-----------|----|-------------|--------------|\n"
+    table += "| Дата/Дн  | Время | Статус | Инфо       |\n"
+    table += "|----------|-------|--------|------------|\n"
     
     for day in schedule_data:
         dt = day['date']
-        date_str = dt.strftime('%d.%m') # Чуть короче для экономии места
-        weekday_str = WEEKDAY_NAMES_RU[dt.weekday()]
+        # Формат: 05.12 ПН
+        date_col = f"{dt.strftime('%d.%m')} {WEEKDAY_NAMES_RU[dt.weekday()]}"
         
         start_t = day['start_time']
         end_t = day['end_time']
-        status_str = day['status']
-        comment = day.get('comment')
+        raw_status = day['status']
+        comment = day.get('comment') or ""
         
-        # Формируем строку времени
+        # Время
         if start_t and end_t:
             s_str = safe_format_time(start_t)
             e_str = safe_format_time(end_t)
@@ -128,20 +123,21 @@ async def my_schedule_generate(update: Update, context: ContextTypes.DEFAULT_TYP
         else:
             time_str = "-"
 
-        # Обрезаем статус если длинный
-        if len(status_str) > 12:
-            status_str = status_str[:11] + "."
+        # Сокращаем статус для компактности
+        status_map = {
+            'Работа': 'Раб',
+            'Выходной': 'Вых',
+            'Отгул/Больничный': 'Отг',
+            'Уволен': 'Увол'
+        }
+        # Если статус нестандартный, берем первые 4 буквы
+        status_short = status_map.get(raw_status, raw_status[:4])
 
-        # Основная строка таблицы
-        table += f"| {date_str:<9} | {weekday_str:<2} | {time_str:<11} | {status_str:<12} |\n"
+        # Обрезаем комментарий, если очень длинный
+        if len(comment) > 12:
+            comment = comment[:11] + "."
         
-        # Если есть комментарий, выводим его отдельной строкой для читаемости
-        if comment:
-            # Обрезаем очень длинные комментарии
-            if len(comment) > 35: 
-                comment = comment[:34] + ".."
-            table += f"| ↳ {comment:<44} |\n"
-            table += "|-----------|----|-------------|--------------|\n"
+        table += f"| {date_col:<8} | {time_str:<5} | {status_short:<6} | {comment:<10} |\n"
         
     table += "```"
     
@@ -150,17 +146,11 @@ async def my_schedule_generate(update: Update, context: ContextTypes.DEFAULT_TYP
         [InlineKeyboardButton("❌ Закрыть", callback_data='my_report_close')]
     ]
     
-    try:
-        await query.edit_message_text(
-            header + table, 
-            reply_markup=InlineKeyboardMarkup(keyboard), 
-            parse_mode='Markdown'
-        )
-    except Exception as e:
-        logger.error(f"Error sending report: {e}")
-        # Если вдруг Markdown сломался из-за символов, шлем без него
-        await query.message.reply_text(header + table, reply_markup=InlineKeyboardMarkup(keyboard))
-        
+    await query.edit_message_text(
+        header + table, 
+        reply_markup=InlineKeyboardMarkup(keyboard), 
+        parse_mode='Markdown'
+    )
     return USER_REPORT_SHOW
 
 async def my_schedule_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:

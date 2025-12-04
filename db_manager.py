@@ -354,16 +354,13 @@ async def get_employee_schedule_for_period(employee_id: int, start_date: date, e
     return final_schedule
 
 async def get_all_schedule_overrides_for_period(start_date: date, end_date: date) -> List[Dict[str, Any]]:
-    """
-    Возвращает все исключения из графика для всех сотрудников за указанный период,
-    объединяя с информацией о сотруднике.
-    """
     query = """
         SELECT 
             so.work_date,
             so.is_day_off,
             so.start_time,
             so.end_time,
+            so.comment,   <-- ДОБАВИТЬ ЭТО
             e.full_name
         FROM schedule_overrides so
         JOIN employees e ON so.employee_id = e.id
@@ -371,8 +368,6 @@ async def get_all_schedule_overrides_for_period(start_date: date, end_date: date
         ORDER BY e.full_name, so.work_date
     """
     return await fetch_all(query, (start_date, end_date))
-
-# Файл: db_manager.py
 
 async def find_conflicting_deals_for_schedule(employee_id: int, start_date_str: str, end_date_str: str, work_start_time_str: str = None, work_end_time_str: str = None) -> List[Dict[str, Any]]:
     """

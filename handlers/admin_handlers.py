@@ -1439,9 +1439,8 @@ async def view_all_schedule_start(update: Update, context: ContextTypes.DEFAULT_
 async def view_all_schedule_generate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Генерирует CSV файл с графиком всех сотрудников и отправляет его."""
     query = update.callback_query
-    await query.answer("Генерация файла, подождите...") # Показываем часики
+    await query.answer("Генерация файла...")
     
-    # 1. Определяем даты
     period = query.data.split('_')[2]
     today = date.today()
     
@@ -1460,19 +1459,13 @@ async def view_all_schedule_generate(update: Update, context: ContextTypes.DEFAU
         next_q = date(today.year, end_month, 28) + timedelta(days=4)
         end_date = next_q - timedelta(days=next_q.day)
 
-    # 2. Получаем всех сотрудников
     employees = await db_manager.get_all_employees()
-    
-    # 3. Подготавливаем CSV в памяти
-    # Используем StringIO для создания текстового буфера
     output = io.StringIO()
-    # delimiter=';' удобнее для Excel в русскоязычной локали
     writer = csv.writer(output, delimiter=';')
     
-    # Заголовки
-    writer.writerow(['Город', 'Должность', 'ФИО', 'Дата', 'День недели', 'Время работы', 'Статус'])
+    # ДОБАВИЛИ КОЛОНКУ 'Комментарий'
+    writer.writerow(['Город', 'Должность', 'ФИО', 'Дата', 'День недели', 'Время работы', 'Статус', 'Комментарий'])
     
-    # 4. Проходим по каждому сотруднику и считаем график
     for emp in employees:
         schedule = await db_manager.get_employee_schedule_for_period(emp['id'], start_date, end_date)
         
@@ -1481,17 +1474,16 @@ async def view_all_schedule_generate(update: Update, context: ContextTypes.DEFAU
             date_str = dt.strftime('%d.%m.%Y')
             weekday_str = WEEKDAY_NAMES_RU[dt.weekday()]
             
-            # Форматирование времени
+            # Безопасное форматирование времени (локально, чтобы не зависеть от user_handlers)
             start_t = day['start_time']
             end_t = day['end_time']
-            time_str = ""
-            if start_t and end_t:
-                # Обрезаем секунды если это timedelta или строка
-                s_str = str(start_t)[:5]
-                e_str = str(end_t)[:5]
-                time_str = f"{s_str}-{e_str}"
-            else:
-                time_str = "-"
+            s_str = ""
+            e_str = ""
+            if start_t: s_str = str(start_t)[:5]
+            if end_t: e_str = str(end_t)[:5]
+
+            time_str = f"{s_str}-{e_str}" if s_str and e_str else "-"
+            comment = day.get('comment', '') or ""
                 
             writer.writerow([
                 emp.get('city', '-'),
@@ -1500,12 +1492,11 @@ async def view_all_schedule_generate(update: Update, context: ContextTypes.DEFAU
                 date_str,
                 weekday_str,
                 time_str,
-                day['status']
+                day['status'],
+                comment # Записываем комментарий
             ])
             
-    # 5. Отправляем файл
     output.seek(0)
-    # Преобразуем в байты с BOM (utf-8-sig) для корректного отображения кириллицы в Excel
     bio = io.BytesIO(output.getvalue().encode('utf-8-sig'))
     bio.name = f"Schedule_{period}_{today.strftime('%Y%m%d')}.csv"
     
@@ -1515,15 +1506,8 @@ async def view_all_schedule_generate(update: Update, context: ContextTypes.DEFAU
         caption=f"📅 График всех сотрудников за период: {start_date.strftime('%d.%m')} - {end_date.strftime('%d.%m')}"
     )
     
-    # Возвращаем меню
     keyboard = [[InlineKeyboardButton("⬅️ Назад в меню графиков", callback_data='go_to_schedule_menu')]]
-    
-    # Т.к. send_document это новое сообщение, редактируем старое меню, чтобы не висело
-    await query.edit_message_text(
-        "Файл сформирован и отправлен.",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    
+    await query.edit_message_text("Файл сформирован и отправлен.", reply_markup=InlineKeyboardMarkup(keyboard))
     return VIEW_ALL_SCHEDULE_SELECT_PERIOD
 
 async def view_schedule_generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1557,28 +1541,44 @@ async def view_schedule_generate_report(update: Update, context: ContextTypes.DE
         f"График работы: {employee['full_name']}\n"
         f"Период: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}\n\n"
     )
+
+    # Функция форматирования времени (локальная)
+    def safe_fmt(val):
+        if not val: return "-"
+        if isinstance(val, str): return val[:5]
+        if isinstance(val, timedelta): return str(val)[:5]
+        if isinstance(val, (time, datetime)): return val.strftime('%H:%M')
+        return str(val)[:5]
+
     table = "```\n"
-    table += "| Дата      | День | Время         | Статус          |\n"
-    table += "|-----------|------|---------------|-----------------|\n"
+    # Сокращенные заголовки для экономии места
+    table += "| Дата/Дн  | Время | Стат | Коммент    |\n"
+    table += "|----------|-------|------|------------|\n"
     
     for day in schedule_data:
         dt = day['date']
-        date_str = dt.strftime('%d.%m.%y')
-        weekday_str = WEEKDAY_NAMES_RU[dt.weekday()]
+        date_col = f"{dt.strftime('%d.%m')} {WEEKDAY_NAMES_RU[dt.weekday()]}"
         
         start_t = day['start_time']
         end_t = day['end_time']
-        if start_t and isinstance(start_t, timedelta): start_t = str(start_t)[:-3]
-        if end_t and isinstance(end_t, timedelta): end_t = str(end_t)[:-3]
+        comment = day.get('comment') or ""
 
-        time_str = f"{start_t or '--:--'} - {end_t or '--:--'}"
-        status_str = day['status']
+        if start_t and end_t:
+            time_str = f"{safe_fmt(start_t)}-{safe_fmt(end_t)}"
+        else:
+            time_str = "-"
+            
+        # Сокращаем статус
+        status_map = {'Работа': 'Раб', 'Выходной': 'Вых', 'Отгул/Больничный': 'Отг'}
+        status_short = status_map.get(day['status'], day['status'][:3])
         
-        table += f"| {date_str:<9} | {weekday_str:<4} | {time_str:<13} | {status_str:<15} |\n"
+        # Обрезаем комментарий
+        if len(comment) > 10: comment = comment[:9] + "."
+        
+        table += f"| {date_col:<8} | {time_str:<5} | {status_short:<4} | {comment:<10} |\n"
         
     table += "```"
     
-    # --- КЛАВИАТУРА ДЛЯ НАВИГАЦИИ ---
     keyboard = [
         [InlineKeyboardButton("⬅️ Другой период", callback_data='back_to_period_select')],
         [InlineKeyboardButton("👤 Другой сотрудник", callback_data='back_to_view_list')],
@@ -1587,8 +1587,6 @@ async def view_schedule_generate_report(update: Update, context: ContextTypes.DE
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await query.edit_message_text(header + table, reply_markup=reply_markup, parse_mode='Markdown')
-    
-    # Переходим в состояние ожидания нажатия навигационной кнопки
     return VIEW_SCHEDULE_SHOW_REPORT
 
 # ========== ОБЩИЕ ФУНКЦИИ И ХЕНДЛЕРЫ ==========
@@ -1723,6 +1721,7 @@ async def view_absences_generate_report(update: Update, context: ContextTypes.DE
     period = query.data.split('_')[2]
     today = date.today()
     
+    # ... (логика дат period == week/month/quarter такая же) ...
     if period == 'week':
         start_date = today - timedelta(days=today.weekday())
         end_date = start_date + timedelta(days=6)
@@ -1738,6 +1737,10 @@ async def view_absences_generate_report(update: Update, context: ContextTypes.DE
         next_q = date(today.year, end_month, 28) + timedelta(days=4)
         end_date = next_q - timedelta(days=next_q.day)
     
+    # !!! Здесь нужно убедиться, что get_all_schedule_overrides_for_period возвращает колонку comment
+    # Для этого нужно обновить запрос в db_manager (сделаем это ниже, если не сделали в шаге 2)
+    # Предполагаем, что в db_manager.py:get_all_schedule_overrides_for_period уже добавлен `so.comment` в SELECT
+    
     overrides_data = await db_manager.get_all_schedule_overrides_for_period(start_date, end_date)
     
     if not overrides_data:
@@ -1747,38 +1750,37 @@ async def view_absences_generate_report(update: Update, context: ContextTypes.DE
         )
         return VIEW_ABSENCES_SHOW_REPORT
 
-    # Группировка по сотруднику
     report_by_employee = {}
     for row in overrides_data:
         if row['full_name'] not in report_by_employee:
             report_by_employee[row['full_name']] = []
         report_by_employee[row['full_name']].append(row)
         
-    report_text = f"*Отчет по изменениям в графике*\n*Период: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}*\n\n"
+    report_text = f"*Отчет по изменениям*\n*Период: {start_date.strftime('%d.%m')} - {end_date.strftime('%d.%m')}*\n\n"
     
+    def safe_fmt(val): return str(val)[:5] if val else ""
+
     for name, records in report_by_employee.items():
         report_text += f"👤 *{escape_markdown(name)}*\n"
         table = "```\n"
-        table += "| Дата      | День | Статус/Время      |\n"
-        table += "|-----------|------|-------------------|\n"
+        table += "| Дата   | Статус/Время    | Коммент    |\n"
+        table += "|--------|-----------------|------------|\n"
 
         for record in records:
             dt = record['work_date']
-            date_str = dt.strftime('%d.%m.%y')
-            weekday_str = WEEKDAY_NAMES_RU[dt.weekday()]
+            date_str = dt.strftime('%d.%m')
             
-            status_str = ""
-            if record['is_day_off']:
-                status_str = "Отгул/Больничный"
-            else:
-                start_t = record['start_time']
-                end_t = record['end_time']
-                # Обработка формата времени из БД
-                if isinstance(start_t, timedelta): start_t = str(start_t)[:-3]
-                if isinstance(end_t, timedelta): end_t = str(end_t)[:-3]
-                status_str = f"Время: {start_t}-{end_t}"
+            comment = record.get('comment') or ""
+            if len(comment) > 10: comment = comment[:9] + "."
 
-            table += f"| {date_str:<9} | {weekday_str:<4} | {status_str:<17} |\n"
+            if record['is_day_off']:
+                info_str = "Отгул"
+            else:
+                start_t = safe_fmt(record['start_time'])
+                end_t = safe_fmt(record['end_time'])
+                info_str = f"{start_t}-{end_t}"
+
+            table += f"| {date_str:<6} | {info_str:<15} | {comment:<10} |\n"
             
         table += "```\n"
         report_text += table

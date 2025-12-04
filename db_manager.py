@@ -254,32 +254,30 @@ async def log_employee_change(admin_id: int, employee_id: int, field: str, old_v
     
     await execute(query, (admin_id, employee_id, field, old_value_str, new_value_str, reason))
 
-async def set_schedule_override_for_period(employee_id: int, start_date_str: str, end_date_str: str, is_day_off: bool, start_time: str = None, end_time: str = None):
+async def set_schedule_override_for_period(employee_id: int, start_date_str: str, end_date_str: str, is_day_off: bool, start_time: str = None, end_time: str = None, comment: str = None):
     """Устанавливает или обновляет исключения в графике для целого периода дат."""
     
     start_date = date.fromisoformat(start_date_str)
     end_date = date.fromisoformat(end_date_str)
     delta = end_date - start_date
     
-    # Собираем все даты в диапазоне
     dates_to_update = [(start_date + timedelta(days=i)).isoformat() for i in range(delta.days + 1)]
     
-    # Готовим один большой запрос для эффективности
+    # Добавили поле comment
     query = """
-        INSERT INTO schedule_overrides (employee_id, work_date, is_day_off, start_time, end_time)
-        VALUES (%s, %s, %s, %s, %s) AS new_values
+        INSERT INTO schedule_overrides (employee_id, work_date, is_day_off, start_time, end_time, comment)
+        VALUES (%s, %s, %s, %s, %s, %s) AS new_values
         ON DUPLICATE KEY UPDATE
         is_day_off = new_values.is_day_off, 
         start_time = new_values.start_time, 
-        end_time = new_values.end_time
+        end_time = new_values.end_time,
+        comment = new_values.comment
     """
     
-    # Создаем список кортежей с данными для каждой даты
     args_list = [
-        (employee_id, d, is_day_off, start_time, end_time) for d in dates_to_update
+        (employee_id, d, is_day_off, start_time, end_time, comment) for d in dates_to_update
     ]
     
-    # Выполняем множество вставок/обновлений за один раз
     async with pool.acquire() as conn:
         async with conn.cursor() as cursor:
             await cursor.executemany(query, args_list)
@@ -292,18 +290,14 @@ async def get_employee_schedule_for_period(employee_id: int, start_date: date, e
     if not employee:
         return []
 
-    # 1. Получаем исключения
+    # Получаем исключения включая комментарий
     query = "SELECT * FROM schedule_overrides WHERE employee_id = %s AND work_date BETWEEN %s AND %s"
     overrides_list = await fetch_all(query, (employee_id, start_date, end_date))
     overrides = {ov['work_date'].isoformat(): ov for ov in overrides_list}
 
-    # 2. Параметры графика
     schedule_pattern = employee.get('schedule_pattern', '5/2')
-    
-    # Для 2/2 берем schedule_start_date (или hire_date как запасной вариант)
     anchor_date = employee.get('schedule_start_date')
     if not anchor_date:
-        # Если не задано, пробуем дату найма, иначе просто старт просмотра (будет неточно, но не упадет)
         hire = employee.get('hire_date')
         if isinstance(hire, str): hire = date.fromisoformat(hire)
         anchor_date = hire if hire else start_date
@@ -314,39 +308,28 @@ async def get_employee_schedule_for_period(employee_id: int, start_date: date, e
     current_date = start_date
     
     while current_date <= end_date:
-        day_info = {'date': current_date}
+        day_info = {'date': current_date, 'comment': None} # Добавили поле comment по умолчанию
         date_str = current_date.isoformat()
         
         is_default_weekend = False
         
-        # --- ЛОГИКА ГРАФИКОВ ---
+        # --- ЛОГИКА ГРАФИКОВ (остается без изменений, сокращено для краткости) ---
         if schedule_pattern == '2/2':
-            # Считаем разницу дней от даты начала цикла
             days_diff = (current_date - anchor_date).days
-            # Если дата в прошлом относительно якоря, считаем математически правильно в обратную сторону
             cycle_day = days_diff % 4 
-            # 0 и 1 = Смена 1, Смена 2 (РАБОТА)
-            # 2 и 3 = Выходной 1, Выходной 2 (ОТДЫХ)
-            if cycle_day >= 2:
-                is_default_weekend = True
-                
+            if cycle_day >= 2: is_default_weekend = True
         elif schedule_pattern == '6/1':
-            # Пн-Сб работа, Вс (6) выходной
-            if current_date.weekday() == 6:
-                is_default_weekend = True
-                
+            if current_date.weekday() == 6: is_default_weekend = True
         elif schedule_pattern == '7/0':
-            # Без выходных
             is_default_weekend = False
-            
-        else: # 5/2 (или любой другой)
-            # Сб(5), Вс(6) выходные
-            if current_date.weekday() in [5, 6]:
-                is_default_weekend = True
+        else: # 5/2
+            if current_date.weekday() in [5, 6]: is_default_weekend = True
 
-        # 3. Применяем исключения или базовый график
+        # 3. Применяем исключения
         if date_str in overrides:
             override = overrides[date_str]
+            day_info['comment'] = override.get('comment') # Заполняем комментарий
+            
             if override['is_day_off']:
                 day_info['status'] = 'Отгул/Больничный'
                 day_info['start_time'] = None

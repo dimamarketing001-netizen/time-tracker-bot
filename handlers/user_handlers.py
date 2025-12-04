@@ -64,14 +64,13 @@ async def my_schedule_generate(update: Update, context: ContextTypes.DEFAULT_TYP
     period = query.data.split('_')[2]
     employee_id = context.user_data['my_schedule_emp_id']
     
-    # Логика дат (такая же, как в админке)
+    # ... (логика определения дат period == 'week' и т.д. остается прежней) ...
     today = date.today()
     if period == 'week':
         start_date = today - timedelta(days=today.weekday())
         end_date = start_date + timedelta(days=6)
     elif period == 'month':
         start_date = today.replace(day=1)
-        # Хитрый способ получить последний день месяца
         next_month = start_date.replace(day=28) + timedelta(days=4)
         end_date = next_month - timedelta(days=next_month.day)
     elif period == 'quarter':
@@ -89,9 +88,10 @@ async def my_schedule_generate(update: Update, context: ContextTypes.DEFAULT_TYP
         f"Период: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}\n\n"
     )
     
+    # Расширяем таблицу, статус может быть длинным из-за комментария
     table = "```\n"
-    table += "| Дата      | День | Время         | Статус          |\n"
-    table += "|-----------|------|---------------|-----------------|\n"
+    table += "| Дата      | День | Время/Инфо      |\n"
+    table += "|-----------|------|-----------------|\n"
     
     for day in schedule_data:
         dt = day['date']
@@ -100,20 +100,44 @@ async def my_schedule_generate(update: Update, context: ContextTypes.DEFAULT_TYP
         
         start_t = day['start_time']
         end_t = day['end_time']
-        # Форматирование времени (убираем секунды)
-        if start_t: start_t = str(start_t)[:5]
-        if end_t: end_t = str(end_t)[:5]
+        
+        # Основная строка времени
+        if start_t and end_t:
+            if isinstance(start_t, timedelta): start_t = (datetime.min + start_t).time()
+            if isinstance(end_t, timedelta): end_t = (datetime.min + end_t).time()
+            time_str = f"{start_t.strftime('%H:%M')}-{end_t.strftime('%H:%M')}"
+        else:
+            time_str = "-"
 
-        time_str = f"{start_t or '--:--'} - {end_t or '--:--'}"
         status_str = day['status']
-        # Обрезаем статус, если слишком длинный, чтобы таблица не поехала
-        if len(status_str) > 15: status_str = status_str[:14] + "."
+        comment = day.get('comment')
+
+        # Если есть комментарий (например "Отсутствие 11-12"), показываем его вместо статуса "Работа" или добавляем
+        info_str = time_str
         
-        table += f"| {date_str:<9} | {weekday_str:<4} | {time_str:<13} | {status_str:<15} |\n"
+        # Если это стандартный рабочий день, но есть коммент - выводим коммент во второй строке или вместо статуса
+        # Для компактности таблицы сделаем так:
+        # Если есть комментарий, пишем его. Если нет, пишем время и статус.
         
+        row_content = f"{time_str}"
+        if comment:
+             # Если строка слишком длинная, переносим? В Markdown таблице сложно.
+             # Просто заменим время на "* " если оно есть в комменте, или добавим.
+             pass
+
+        table += f"| {date_str:<9} | {weekday_str:<4} | {row_content:<15} |\n"
+        
+        # Если есть комментарий, добавляем его отдельной строкой в таблицу для читаемости
+        if comment:
+             table += f"|           |      | {comment:<15} |\n"
+        elif status_str != 'Работа' and time_str == '-':
+             # Если выходной/отгул
+             table += f"|           |      | {status_str:<15} |\n"
+        
+        table += "|-----------|------|-----------------|\n"
+
     table += "```"
     
-    # Кнопки навигации
     keyboard = [
         [InlineKeyboardButton("⬅️ Выбрать другой период", callback_data='back_to_my_period_select')],
         [InlineKeyboardButton("❌ Закрыть", callback_data='my_report_close')]

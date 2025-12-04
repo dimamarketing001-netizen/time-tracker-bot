@@ -12,7 +12,7 @@ from utils import security_required, verify_totp, get_main_keyboard
 import db_manager as db_manager
 from telegram.helpers import escape_markdown
 import calendar_helper
-from datetime import date, timedelta
+from datetime import date, timedelta,datetime, time
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
 import csv
 import io
@@ -1890,12 +1890,13 @@ async def finalize_delete_employee(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text("❌ Неверный код 2FA. Попробуйте снова.", reply_markup=get_main_keyboard(role))
         return AWAITING_DELETE_EMPLOYEE_2FA
 
+
 async def sb_approve_early_leave(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """СБ нажал 'Согласовать'."""
+    """СБ нажал 'Согласовать' (с автоматическим изменением графика)."""
     query = update.callback_query
     user_id = query.from_user.id
     
-    # Проверка прав
+    # Проверка прав СБ
     sb_employee = await db_manager.get_employee_by_telegram_id(user_id)
     if not sb_employee or sb_employee['role'].lower() not in ['security', 'admin']:
         await query.answer("Нет прав!", show_alert=True)
@@ -1906,50 +1907,126 @@ async def sb_approve_early_leave(update: Update, context: ContextTypes.DEFAULT_T
     # data: approve_early_{emp_id}
     employee_id = int(query.data.split('_')[2])
     
-    # 1. Получаем данные заявки из БД
+    # 1. Получаем заявку
     request = await db_manager.get_last_pending_request(employee_id, 'early_leave')
     
-    # 2. Обновляем статус сотрудника (выпускаем его)
+    # 2. Выпускаем сотрудника (меняем статус)
     await db_manager.update_employee_status(employee_id, 'offline')
     
     log_reason = 'Ранний уход (согласовано)'
-    
-    # 3. Если в заявке есть изменение графика — применяем его
+    schedule_change_info = ""
+
     if request:
         data = json.loads(request['data_json'])
         mode = data.get('mode')
         
-        if mode == 'custom':
-            # Применяем изменение графика (override)
-            date_start = data.get('date_start')
-            date_end = data.get('date_end')
+        # Получаем даты заявки
+        if mode == 'today_end':
+            # "Сегодня до конца" - это один день
+            req_date_start = date.today()
+            req_date_end = date.today()
+            # Время отсутствия: с "сейчас" (или фактического выхода) до конца смены
+            # Но для изменения графика нам важно знать, что конец смены теперь = времени ухода.
+            # Мы возьмем время из actual_end, который сохранили при заявке
+            leave_start_time_str = data.get('actual_end') # Например "17:00"
+            leave_end_time_str = "23:59" # До конца дня
+        else:
+            # Custom период
+            req_date_start = date.fromisoformat(data.get('date_start'))
+            req_date_end = date.fromisoformat(data.get('date_end'))
+            leave_start_time_str = data.get('time_start') # "11:00"
+            leave_end_time_str = data.get('time_end')     # "12:00"
+
+        # Проходим по дням периода
+        curr_date = req_date_start
+        while curr_date <= req_date_end:
+            # 1. Получаем текущий (базовый) график сотрудника на этот день
+            # get_employee_schedule_for_period вернет массив из 1 дня с учетом дефолтов
+            base_schedule_list = await db_manager.get_employee_schedule_for_period(employee_id, curr_date, curr_date)
             
-            # В данном примере мы помечаем эти дни как "отгул/выходной" или меняем время?
-            # Если пользователь указал время (например, с 11:00 до 12:00), 
-            # БД schedule_overrides поддерживает только start_time и end_time РАБОЧЕГО дня.
-            # Если это частичное отсутствие, мы просто разрешаем выход (/off).
-            # Если это полные дни:
-            if not data.get('time_start'): # Если времени нет, значит полные дни
-                 await db_manager.set_schedule_override_for_period(
-                    employee_id, date_start, date_end, is_day_off=True
-                )
-                 log_reason = f"Отгул: {date_start}-{date_end}"
+            if base_schedule_list:
+                day_sched = base_schedule_list[0]
+                
+                # Если это рабочий день и есть время начала/конца
+                if day_sched['status'] == 'Работа' and day_sched['start_time'] and day_sched['end_time']:
+                    # Базовые границы рабочего дня
+                    work_start = day_sched['start_time'] # timedelta или time
+                    work_end = day_sched['end_time']     # timedelta или time
+
+                    # Приводим к типу datetime.time для сравнения
+                    def to_time(val):
+                        if isinstance(val, str): 
+                            try: return datetime.strptime(val, '%H:%M:%S').time()
+                            except: return datetime.strptime(val, '%H:%M').time()
+                        if isinstance(val, timedelta): return (datetime.min + val).time()
+                        return val
+
+                    ws = to_time(work_start)
+                    we = to_time(work_end)
+                    ls = to_time(leave_start_time_str)
+                    le = to_time(leave_end_time_str)
+                    
+                    new_start = ws
+                    new_end = we
+                    comment = None
+                    is_day_off = False
+
+                    # ЛОГИКА ПЕРЕСЕЧЕНИЙ
+                    
+                    # 1. Отсутствие перекрывает ВЕСЬ день (или больше)
+                    if ls <= ws and le >= we:
+                        is_day_off = True
+                        comment = "Отгул на весь день"
+
+                    # 2. Ранний уход (Early Leave): Отсутствие начинается внутри дня и идет до конца
+                    # Пример: Работа 09-18, Ушел в 17:00 (Absence 17:00-18:00)
+                    elif ls > ws and ls < we and le >= we:
+                        new_end = ls # Конец работы теперь равен началу отсутствия
+                        comment = f"Уход раньше ({ls.strftime('%H:%M')})"
+
+                    # 3. Опоздание/Поздний приход: Отсутствие начинается до работы и заканчивается внутри
+                    # Пример: Работа 09-18, Пришел в 10:00 (Absence 09:00-10:00)
+                    elif ls <= ws and le > ws and le < we:
+                        new_start = le # Начало работы теперь равно концу отсутствия
+                        comment = f"Поздний приход (с {le.strftime('%H:%M')})"
+
+                    # 4. Отсутствие в середине (Split shift)
+                    # Пример: Работа 09-18, Отсутствие 11-12
+                    elif ls > ws and le < we:
+                        # Мы не можем разделить start/end в БД, поэтому оставляем границы 09-18
+                        # НО пишем специальный комментарий для отчета
+                        # new_start и new_end остаются прежними (ws, we)
+                        comment = f"Отсутствие {ls.strftime('%H:%M')}-{le.strftime('%H:%M')}"
+
+                    # Применяем изменение в БД
+                    # Важно: преобразуем time обратно в строку
+                    await db_manager.set_schedule_override_for_period(
+                        employee_id, 
+                        curr_date.isoformat(), 
+                        curr_date.isoformat(),
+                        is_day_off=is_day_off,
+                        start_time=new_start.strftime('%H:%M'),
+                        end_time=new_end.strftime('%H:%M'),
+                        comment=comment
+                    )
+                    schedule_change_info = "(График обновлен)"
+
+            curr_date += timedelta(days=1)
         
-        # Закрываем заявку
         await db_manager.update_request_status(request['id'], 'approved')
 
     # 4. Логируем
     await db_manager.log_approved_time_event(
         employee_id=employee_id, event_type='clock_out', reason=log_reason,
-        approver_id=sb_employee['id'], approval_reason='Согласование СБ'
+        approver_id=sb_employee['id'], approval_reason=f'Согласование СБ {schedule_change_info}'
     )
     
-    await query.edit_message_text(f"✅ Заявка согласована (СБ: {sb_employee['full_name']}).\nСотрудник отпущен.")
+    await query.edit_message_text(f"✅ Заявка согласована (СБ: {sb_employee['full_name']}).\nСотрудник отпущен. {schedule_change_info}")
     
     target_emp = await db_manager.get_employee_by_id(employee_id)
     if target_emp:
         try:
-            await context.bot.send_message(target_emp['personal_telegram_id'], "✅ Ваш запрос согласован.")
+            await context.bot.send_message(target_emp['personal_telegram_id'], f"✅ Ваш запрос согласован. График скорректирован.")
         except: pass
 
 async def sb_reject_early_leave(update: Update, context: ContextTypes.DEFAULT_TYPE):

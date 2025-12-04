@@ -472,30 +472,70 @@ async def get_leave_time_end(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def send_early_leave_request_to_sb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Финальная отправка в СБ."""
+    # 1. Получаем данные
     data = context.user_data['early_leave_data']
-    employee = await db_manager.get_employee_by_telegram_id(update.effective_user.id)
+    user_id = update.effective_user.id
+    employee = await db_manager.get_employee_by_telegram_id(user_id)
     
+    # 2. Формируем строку периода
     if data.get('mode') == 'today_end':
-        period_str = f"Сегодня до конца смены (план: {data['planned_end']})"
+        period_str = f"Сегодня до конца смены (план: {data.get('planned_end', '?')})"
     else:
-        period_str = f"{data['date_start']} {data['time_start']} — {data['date_end']} {data['time_end']}"
+        period_str = f"{data.get('date_start')} {data.get('time_start')} — {data.get('date_end')} {data.get('time_end')}"
     
-    # Сохраняем данные заявки в Redis или БД, чтобы СБ мог их достать по ID сотрудника?
-    # Нет, лучше передать всё в тексте сообщения, а при нажатии СБ парсить (сложно)
-    # ИЛИ сохранить "последнюю заявку" в БД.
-    # Давайте добавим таблицу requests или просто поле last_request_json в employees.
-    # Для простоты пока передадим ID и будем надеяться, что данные не потеряются (но лучше в БД).
-    
-    # ... (код отправки в СБ с кнопками) ...
-    
-    # ВАЖНО: В callback_data кнопок СБ мы можем передать только ID сотрудника.
-    # Данные о времени (какое именно время согласовываем) СБ должен видеть в тексте,
-    # а бот должен знать, что именно применять.
-    # Придется сохранить параметры запроса в БД (например, в новую таблицу employee_requests).
-    
+    # 3. Сохраняем заявку в БД
+    # ВАЖНО: Мы сохраняем json, чтобы при согласовании СБ мы знали, что именно применять
     await db_manager.save_employee_request(employee['id'], 'early_leave', json.dumps(data))
     
-    # ... (отправка сообщения в СБ) ...
+    # 4. Уведомляем пользователя (это может быть CallbackQuery или Message)
+    user_response_text = "✅ Заявка на ранний уход отправлена в СБ. Ожидайте решения (бот уведомит вас)."
+    
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(user_response_text)
+    else:
+        await update.message.reply_text(user_response_text)
+    
+    # 5. Отправляем сообщение в чат СБ
+    try:
+        topic_name = f"Ранний уход: {employee['full_name']} {datetime.now().strftime('%d.%m')}"
+        topic = await context.bot.create_forum_topic(chat_id=config.SECURITY_CHAT_ID, name=topic_name)
+        thread_id = topic.message_thread_id
+    except Exception as e:
+        logger.error(f"Error creating topic for early leave: {e}")
+        thread_id = None # Если топики не работают, шлем в общий чат
+    
+    keyboard = [
+        [InlineKeyboardButton("✅ Согласовать", callback_data=f"approve_early_{employee['id']}")],
+        [InlineKeyboardButton("❌ Не согласовать", callback_data=f"reject_early_{employee['id']}")],
+        [InlineKeyboardButton("✏️ Изменить время", callback_data=f"change_early_{employee['id']}")]
+    ]
+    
+    # Хелпер для экранирования MarkdownV2 (локальный)
+    def esc(text):
+        return escape_markdown(str(text), version=2)
+
+    msg_text = (
+        f"⚠️ *Заявка на ранний уход*\n\n"
+        f"Сотрудник: *{esc(employee['full_name'])}*\n"
+        f"Должность: {esc(employee.get('position', '-'))}\n"
+        f"Плановый конец: {esc(data.get('planned_end', '?'))}\n"
+        f"Текущее время: {esc(data.get('actual_end', '?'))}\n\n"
+        f"*Причина:* {esc(data.get('reason', '-'))}\n"
+        f"*Запрашиваемый период:* {esc(period_str)}"
+    )
+    
+    await context.bot.send_message(
+        chat_id=config.SECURITY_CHAT_ID,
+        message_thread_id=thread_id,
+        text=msg_text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='MarkdownV2'
+    )
+    
+    # 6. Очищаем данные и завершаем диалог
+    context.user_data.pop('early_leave_data', None)
+    return ConversationHandler.END
 
 async def get_early_leave_period(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Получаем период и отправляем в СБ."""

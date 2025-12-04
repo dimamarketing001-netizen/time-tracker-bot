@@ -360,7 +360,7 @@ async def get_all_schedule_overrides_for_period(start_date: date, end_date: date
             so.is_day_off,
             so.start_time,
             so.end_time,
-            so.comment,   <-- ДОБАВИТЬ ЭТО
+            so.comment,
             e.full_name
         FROM schedule_overrides so
         JOIN employees e ON so.employee_id = e.id

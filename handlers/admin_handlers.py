@@ -176,8 +176,7 @@ async def admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def start_select_position(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
     Универсальная функция старта выбора.
-    Определяет, какое действие мы хотим совершить (Edit Card, View Sched, Edit Sched),
-    сохраняет его в контекст и показывает список должностей.
+    Использует индексы вместо названий должностей, чтобы избежать ошибки Button_data_invalid.
     """
     query = update.callback_query
     await query.answer()
@@ -200,21 +199,30 @@ async def start_select_position(update: Update, context: ContextTypes.DEFAULT_TY
     positions = await db_manager.get_unique_positions()
     
     if not positions:
-        await query.edit_message_text("В базе нет сотрудников с указанными должностями.", 
-                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data='back_to_admin_panel')]]))
+        await query.edit_message_text(
+            "В базе нет сотрудников с указанными должностями.", 
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data='back_to_admin_panel')]])
+        )
         return ADMIN_MAIN_MENU
 
+    # === ИСПРАВЛЕНИЕ НАЧАЛО ===
+    # Создаем словарь { "0": "Должность1", "1": "Должность2" } и сохраняем в память
+    # Это позволяет передавать в кнопке только короткий индекс "0", "1" и т.д.
+    position_map = {str(i): pos for i, pos in enumerate(positions)}
+    context.user_data['position_map'] = position_map
+
     keyboard = []
-    # Группируем по 2 кнопки в ряд
     row = []
-    for pos in positions:
-        # callback: sel_pos_НазваниеДолжности
-        row.append(InlineKeyboardButton(pos, callback_data=f"sel_pos_{pos}"))
+    for i, pos in enumerate(positions):
+        # В callback_data пишем sel_pos_0, sel_pos_1 и т.д. Это занимает очень мало байт.
+        # Само название (pos) остается только в тексте кнопки.
+        row.append(InlineKeyboardButton(pos, callback_data=f"sel_pos_{i}"))
         if len(row) == 2:
             keyboard.append(row)
             row = []
     if row:
         keyboard.append(row)
+    # === ИСПРАВЛЕНИЕ КОНЕЦ ===
         
     # Кнопка назад зависит от того, откуда пришли
     back_callback = 'go_to_employee_card_menu' if action_type == 'edit_card' else 'go_to_schedule_menu'
@@ -227,7 +235,7 @@ async def start_select_position(update: Update, context: ContextTypes.DEFAULT_TY
     }
     
     await query.edit_message_text(
-        f"*{titles.get(action_type)}*\nВыберите должность:",
+        f"*{titles.get(action_type, 'Выбор')}*\nВыберите должность:",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode='Markdown'
     )
@@ -238,8 +246,25 @@ async def select_employee_by_position(update: Update, context: ContextTypes.DEFA
     query = update.callback_query
     await query.answer()
     
-    # Получаем должность (учтите, что должность может содержать пробелы)
-    position = query.data.split('_', 2)[2] 
+    # === ИСПРАВЛЕНИЕ НАЧАЛО ===
+    # Получаем индекс из callback_data (например, '0' из 'sel_pos_0')
+    try:
+        pos_index = query.data.split('_', 2)[2] 
+        # Достаем реальное название из памяти
+        position_map = context.user_data.get('position_map', {})
+        position = position_map.get(pos_index)
+    except Exception:
+        position = None
+
+    # Если бот перезагрузился и память очистилась, отправляем назад
+    if not position:
+        await query.edit_message_text(
+            "⚠️ Данные устарели. Пожалуйста, начните выбор сначала.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 В начало", callback_data='back_to_admin_panel')]])
+        )
+        return ADMIN_MAIN_MENU
+    # === ИСПРАВЛЕНИЕ КОНЕЦ ===
+
     employees = await db_manager.get_employees_by_position(position)
     
     keyboard = []
@@ -250,8 +275,11 @@ async def select_employee_by_position(update: Update, context: ContextTypes.DEFA
     # Кнопка назад к выбору должностей
     keyboard.append([InlineKeyboardButton("⬅️ Назад к должностям", callback_data='back_to_positions')])
     
+    # Экранируем название должности для Markdown, чтобы не ломалось на символах вроде "-", "."
+    safe_position = escape_markdown(position, version=1)
+
     await query.edit_message_text(
-        f"Сотрудники в должности *{position}*:",
+        f"Сотрудники в должности *{safe_position}*:",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode='Markdown'
     )

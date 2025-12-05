@@ -1377,21 +1377,30 @@ async def finalize_reset_2fa(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.answer()
     
     if query.data == 'confirm_reset_yes':
-        employee_id = context.user_data['employee_to_edit_id']
-        employee = await db_manager.get_employee_by_id(employee_id)
-        await db_manager.set_totp_secret(employee_id, None)
-        await query.edit_message_text(f"✅ 2FA для сотрудника *{employee['full_name']}* успешно сброшен.")
+        employee_id = context.user_data.get('employee_to_edit_id') # Используем .get для безопасности
+        
+        if not employee_id:
+            await query.edit_message_text("Ошибка: ID сотрудника потерян. Попробуйте выбрать сотрудника заново.")
+            return SELECT_EMPLOYEE_TO_EDIT
 
+        employee = await db_manager.get_employee_by_id(employee_id)
+        
+        # Сбрасываем секрет в БД
+        await db_manager.set_totp_secret(employee_id, None)
+        
+        # Отправляем подтверждение (редактируем сообщение с вопросом)
+        await query.edit_message_text(f"✅ 2FA для сотрудника *{employee['full_name']}* успешно сброшен.", parse_mode='Markdown')
+
+        # Удаляем старое сообщение меню, если оно было сохранено, чтобы не дублировать
         admin_msg_id = context.user_data.get('admin_menu_message_id')
         if admin_msg_id:
             try:
                 await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=admin_msg_id)
             except Exception:
                 pass
-    else: # отмена
+    else: # если нажали "Нет, отмена"
         await query.edit_message_text("Сброс 2FA отменен.")
     
-    context.user_data.clear()
     return await show_employee_edit_menu(update, context)
 
 # ========== ЛОГИКА ПРОСМОТРА ГРАФИКА ==========

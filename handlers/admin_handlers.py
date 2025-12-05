@@ -72,6 +72,18 @@ ADMIN_MAIN_MENU = 0
     AWAITING_DELETE_EMPLOYEE_2FA,
 ) = range(55)
 
+AVAILABLE_POSITIONS = [
+    "Кассир", 
+    "Инспектор ФБ", 
+    "Оператор", 
+    "Чат менеджер", 
+    "СБ", 
+    "Администратор", 
+    "Логист", 
+    "Менеджер АХО",
+    "Менеджер по работе с партнерами",
+    "Тренинг-менеджер"       
+]
 
 # ========== СЛОВАРИ И ВСПОМОГАТЕЛЬНЫЕ ДАННЫЕ ==========
 EDITABLE_FIELDS = {
@@ -360,8 +372,10 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     phone = update.message.text.strip()
     context.user_data['new_employee']['personal_phone'] = phone
     
-    positions = ["Кассир", "Инспектор ФБ", "Оператор", "Чат менеджер", "СБ", "Администратор", "Логист", "Менеджер АХО"]
-    buttons = [InlineKeyboardButton(pos, callback_data=f"pos_{pos}") for pos in positions]
+    # Используем общий список
+    buttons = [InlineKeyboardButton(pos, callback_data=f"pos_{pos}") for pos in AVAILABLE_POSITIONS]
+    
+    # Группируем кнопки по 2 в ряд для красоты
     keyboard_rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
     reply_markup = InlineKeyboardMarkup(keyboard_rows)
     
@@ -931,11 +945,12 @@ async def start_edit_data(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return EDIT_DATA_SELECT_FIELD
 
 async def request_edit_data_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Запрашивает новое значение для выбранного поля."""
     query = update.callback_query
     await query.answer()
     field = query.data.split('_', 3)[3]
+
     context.user_data['current_edit_field'] = field
+    # Важно: обновляем ID сообщения, чтобы потом удалить меню
     context.user_data['admin_menu_message_id'] = query.message.message_id
 
     reply_keyboard = None
@@ -945,19 +960,28 @@ async def request_edit_data_value(update: Update, context: ContextTypes.DEFAULT_
     if 'date' in field:
         message_text += " в формате ГГГГ-ММ-ДД (например, 2025-12-31)"
         
-    message_text += "\n(или нажмите '❌ Отмена'):"
+    # --- ЛОГИКА ДЛЯ ВЫБОРА ДОЛЖНОСТИ ПРИ РЕДАКТИРОВАНИИ ---
+    if field == 'position':
+        # Группируем кнопки для ReplyKeyboardMarkup (обычная клавиатура внизу)
+        # Так как следующий шаг ожидает ТЕКСТ (MessageHandler), используем ReplyKM, а не Inline
+        reply_keyboard = [AVAILABLE_POSITIONS[i:i+2] for i in range(0, len(AVAILABLE_POSITIONS), 2)]
+        reply_keyboard.append(["❌ Отмена"])
+        message_text = "Выберите новую должность из списка или введите вручную:"
 
-    if field == 'default_start_time':
+    elif field == 'default_start_time':
         reply_keyboard = [["09:00", "10:00", "11:00", "12:00", "13:00"], ["❌ Отмена"]]
     elif field == 'default_end_time':
         reply_keyboard = [["18:00", "20:00", "21:00", "22:00", "23:00"], ["❌ Отмена"]]
     else:
         reply_keyboard = [["❌ Отмена"]]
 
-    await query.edit_message_text(f"Редактирование поля: {EDITABLE_FIELDS.get(field, field)}", reply_markup=InlineKeyboardMarkup([]))
+    # Убираем инлайн кнопки старого меню
+    await query.edit_message_text(f"Редактирование поля: {field_name}", reply_markup=InlineKeyboardMarkup([]))
+    
+    # Отправляем сообщение с клавиатурой (если есть)
     await query.message.reply_text(
-        message_text,
-        reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True),
+        message_text + "\n(или нажмите '❌ Отмена'):",
+        reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True) if reply_keyboard else None,
         parse_mode='Markdown'
     )
 

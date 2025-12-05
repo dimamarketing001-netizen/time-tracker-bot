@@ -72,18 +72,6 @@ ADMIN_MAIN_MENU = 0
     AWAITING_DELETE_EMPLOYEE_2FA,
 ) = range(55)
 
-AVAILABLE_POSITIONS = [
-    "Кассир", 
-    "Инспектор ФБ", 
-    "Оператор", 
-    "Чат менеджер", 
-    "СБ", 
-    "Администратор", 
-    "Логист", 
-    "Менеджер АХО",
-    "Менеджер по работе с партнерами",
-    "Тренинг-менеджер"       
-]
 
 # ========== СЛОВАРИ И ВСПОМОГАТЕЛЬНЫЕ ДАННЫЕ ==========
 EDITABLE_FIELDS = {
@@ -186,50 +174,49 @@ async def admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     return ConversationHandler.END
 
 async def start_select_position(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Универсальная функция старта выбора."""
+    """
+    Универсальная функция старта выбора.
+    Определяет, какое действие мы хотим совершить (Edit Card, View Sched, Edit Sched),
+    сохраняет его в контекст и показывает список должностей.
+    """
     query = update.callback_query
     await query.answer()
     
+    # Определяем тип действия по нажатой кнопке
     action_map = {
         'admin_edit_start': 'edit_card',
         'admin_view_schedule_start': 'view_schedule',
         'admin_edit_schedule_start': 'edit_schedule'
     }
     
+    # Если мы пришли из кнопки "Назад" (из списка сотрудников), то тип действия уже в памяти
     action_type = action_map.get(query.data)
     if not action_type:
         action_type = context.user_data.get('admin_action_type')
     else:
         context.user_data['admin_action_type'] = action_type
 
-    # Получаем должности из БД
-    db_positions = await db_manager.get_unique_positions()
+    # Получаем должности
+    positions = await db_manager.get_unique_positions()
     
-    if not db_positions:
+    if not positions:
         await query.edit_message_text("В базе нет сотрудников с указанными должностями.", 
                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data='back_to_admin_panel')]]))
         return ADMIN_MAIN_MENU
 
     keyboard = []
+    # Группируем по 2 кнопки в ряд
     row = []
-    
-    for pos in db_positions:
-        # ПРОВЕРКА: Если название длинное и есть в нашем списке - используем индекс
-        if pos in AVAILABLE_POSITIONS:
-            idx = AVAILABLE_POSITIONS.index(pos)
-            callback_data = f"sel_pid_{idx}" # pid = position id
-        else:
-            # Если должность короткая или нестандартная - отправляем текстом
-            # (надеемся, что кастомные должности не длиннее 50 символов)
-            callback_data = f"sel_pstr_{pos}"
-
-        row.append(InlineKeyboardButton(pos, callback_data=callback_data))
+    for pos in positions:
+        # callback: sel_pos_НазваниеДолжности
+        row.append(InlineKeyboardButton(pos, callback_data=f"sel_pos_{pos}"))
         if len(row) == 2:
             keyboard.append(row)
             row = []
     if row:
         keyboard.append(row)
         
+    # Кнопка назад зависит от того, откуда пришли
     back_callback = 'go_to_employee_card_menu' if action_type == 'edit_card' else 'go_to_schedule_menu'
     keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data=back_callback)])
     
@@ -251,24 +238,8 @@ async def select_employee_by_position(update: Update, context: ContextTypes.DEFA
     query = update.callback_query
     await query.answer()
     
-    data = query.data
-    position = None
-
-    # Распознаем, пришел индекс или строка
-    if data.startswith("sel_pid_"):
-        idx = int(data.split('_')[2])
-        if 0 <= idx < len(AVAILABLE_POSITIONS):
-            position = AVAILABLE_POSITIONS[idx]
-    elif data.startswith("sel_pstr_"):
-        position = data.split('_', 2)[2]
-    # Поддержка старого формата (на всякий случай)
-    elif data.startswith("sel_pos_"):
-        position = data.split('_', 2)[2]
-
-    if not position:
-        await query.edit_message_text("Ошибка определения должности.")
-        return ADMIN_MAIN_MENU
-
+    # Получаем должность (учтите, что должность может содержать пробелы)
+    position = query.data.split('_', 2)[2] 
     employees = await db_manager.get_employees_by_position(position)
     
     keyboard = []
@@ -276,12 +247,13 @@ async def select_employee_by_position(update: Update, context: ContextTypes.DEFA
         # callback: sel_emp_ID
         keyboard.append([InlineKeyboardButton(emp['full_name'], callback_data=f"sel_emp_{emp['id']}")])
         
+    # Кнопка назад к выбору должностей
     keyboard.append([InlineKeyboardButton("⬅️ Назад к должностям", callback_data='back_to_positions')])
     
     await query.edit_message_text(
-        f"Сотрудники в должности *{escape_markdown(position, version=2)}*:",
+        f"Сотрудники в должности *{position}*:",
         reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='MarkdownV2'
+        parse_mode='Markdown'
     )
     return SELECT_EMPLOYEE_FROM_LIST
 
@@ -388,12 +360,8 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     phone = update.message.text.strip()
     context.user_data['new_employee']['personal_phone'] = phone
     
-    # Генерируем кнопки с ИНДЕКСАМИ, а не полными названиями
-    buttons = []
-    for i, pos in enumerate(AVAILABLE_POSITIONS):
-        # callback будет вида: pos_idx_0, pos_idx_8 и т.д.
-        buttons.append(InlineKeyboardButton(pos, callback_data=f"pos_idx_{i}"))
-    
+    positions = ["Кассир", "Инспектор ФБ", "Оператор", "Чат менеджер", "СБ", "Администратор", "Логист", "Менеджер АХО", "Тренинг-менеджер", "Партнерский менеджер"]
+    buttons = [InlineKeyboardButton(pos, callback_data=f"pos_{pos}") for pos in positions]
     keyboard_rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
     reply_markup = InlineKeyboardMarkup(keyboard_rows)
     
@@ -403,19 +371,7 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def get_position(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    
-    data = query.data
-    position = "Неизвестно"
-    
-    # Обрабатываем индекс
-    if data.startswith("pos_idx_"):
-        idx = int(data.split('_')[2])
-        if 0 <= idx < len(AVAILABLE_POSITIONS):
-            position = AVAILABLE_POSITIONS[idx]
-    # На случай старых кнопок или ручного ввода (маловероятно)
-    elif data.startswith("pos_"):
-        position = data.split('_', 1)[1]
-        
+    position = query.data.split('_', 1)[1]
     context.user_data['new_employee']['position'] = position
     await query.edit_message_text(
         f"Должность '{position}' установлена.\n\n"
@@ -928,11 +884,7 @@ async def get_rel_liv_address(update: Update, context: ContextTypes.DEFAULT_TYPE
         pass 
     else:
         await update.message.reply_text(success_text)
-        
-    # Возвращаемся в меню родственников (нужно обновить update для вызова функции или отправить сообщение вручную)
-    # Проще вызвать функцию меню, но нужно подготовить dummy update или просто отправить текст с кнопками.
-    # Давайте отправим текст с кнопкой возврата.
-    
+
     keyboard = [[InlineKeyboardButton("🔙 К списку родственников", callback_data='manage_relatives')]]
     # Если это было текстовое сообщение
     if not update.callback_query:
@@ -975,12 +927,11 @@ async def start_edit_data(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return EDIT_DATA_SELECT_FIELD
 
 async def request_edit_data_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Запрашивает новое значение для выбранного поля."""
     query = update.callback_query
     await query.answer()
     field = query.data.split('_', 3)[3]
-
     context.user_data['current_edit_field'] = field
-    # Важно: обновляем ID сообщения, чтобы потом удалить меню
     context.user_data['admin_menu_message_id'] = query.message.message_id
 
     reply_keyboard = None
@@ -990,101 +941,23 @@ async def request_edit_data_value(update: Update, context: ContextTypes.DEFAULT_
     if 'date' in field:
         message_text += " в формате ГГГГ-ММ-ДД (например, 2025-12-31)"
         
-    # --- ИЗМЕНЕНИЕ: ЛОГИКА ДЛЯ ВЫБОРА ДОЛЖНОСТИ (INLINE) ---
-    if field == 'position':
-        # Генерируем Inline кнопки с индексами (pos_idx_0, pos_idx_1...)
-        buttons = []
-        for i, pos in enumerate(AVAILABLE_POSITIONS):
-            buttons.append(InlineKeyboardButton(pos, callback_data=f"pos_idx_{i}"))
-        
-        # Группируем по 2 в ряд
-        keyboard_rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
-        
-        # Добавляем кнопку отмены
-        keyboard_rows.append([InlineKeyboardButton("❌ Отмена", callback_data="back_to_edit_menu")])
-        
-        await query.edit_message_text(
-            f"Редактирование поля: {field_name}\nВыберите новую должность:", 
-            reply_markup=InlineKeyboardMarkup(keyboard_rows)
-        )
-        # Мы остаемся в состоянии получения значения, но теперь ждем callback, а не текст
-        return EDIT_DATA_GET_VALUE
+    message_text += "\n(или нажмите '❌ Отмена'):"
 
-    # Остальная логика для времени и текста
-    elif field == 'default_start_time':
+    if field == 'default_start_time':
         reply_keyboard = [["09:00", "10:00", "11:00", "12:00", "13:00"], ["❌ Отмена"]]
     elif field == 'default_end_time':
         reply_keyboard = [["18:00", "20:00", "21:00", "22:00", "23:00"], ["❌ Отмена"]]
     else:
         reply_keyboard = [["❌ Отмена"]]
 
-    # Убираем инлайн кнопки старого меню
-    await query.edit_message_text(f"Редактирование поля: {field_name}", reply_markup=InlineKeyboardMarkup([]))
-    
-    # Отправляем сообщение с клавиатурой (если есть)
+    await query.edit_message_text(f"Редактирование поля: {EDITABLE_FIELDS.get(field, field)}", reply_markup=InlineKeyboardMarkup([]))
     await query.message.reply_text(
-        message_text + "\n(или нажмите '❌ Отмена'):",
-        reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True) if reply_keyboard else None,
+        message_text,
+        reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True),
         parse_mode='Markdown'
     )
 
     return EDIT_DATA_GET_VALUE
-
-async def get_edited_position_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обрабатывает выбор должности из Inline-кнопок при редактировании."""
-    try:
-        query = update.callback_query
-        await query.answer()
-        
-        data = query.data
-        logger.info(f"DEBUG: callback caught: {data}")  # Логируем нажатие
-        
-        position = "Неизвестно"
-        
-        # Декодируем индекс обратно в название
-        if data.startswith("pos_idx_"):
-            parts = data.split('_')
-            # Проверка, что формат верный (pos, idx, ЧИСЛО)
-            if len(parts) >= 3 and parts[2].isdigit():
-                idx = int(parts[2])
-                if 0 <= idx < len(AVAILABLE_POSITIONS):
-                    position = AVAILABLE_POSITIONS[idx]
-                else:
-                    logger.error(f"DEBUG: Index {idx} out of bounds for positions list")
-            else:
-                logger.error(f"DEBUG: Invalid data format: {data}")
-        
-        # Сохраняем значение
-        context.user_data['new_field_value'] = position
-        logger.info(f"DEBUG: Position saved: {position}")
-        
-        # Готовимся к запросу причины (переходим к тексту)
-        cancel_kb = ReplyKeyboardMarkup([["❌ Отмена"]], resize_keyboard=True)
-        
-        # Удаляем меню с кнопками должностей (reply_markup=None уберет кнопки)
-        await query.edit_message_text(f"Выбрана должность: {position}", reply_markup=None)
-        
-        # Отправляем новое сообщение с просьбой ввести причину
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="Значение принято. Теперь введите *краткую причину* изменения:",
-            reply_markup=cancel_kb,
-            parse_mode='Markdown'
-        )
-        
-        return EDIT_DATA_GET_REASON
-
-    except Exception as e:
-        logger.error(f"CRITICAL ERROR in get_edited_position_callback: {e}", exc_info=True)
-        # Пытаемся сообщить пользователю об ошибке, если возможно
-        try:
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text="❌ Произошла ошибка при выборе должности. Попробуйте еще раз или нажмите Отмена."
-            )
-        except:
-            pass
-        return EDIT_DATA_GET_VALUE
 
 async def get_edited_data_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Получает новое значение и запрашивает причину изменения."""
@@ -2359,11 +2232,7 @@ admin_conv = ConversationHandler(
             MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_rel_liv_address),
             CallbackQueryHandler(get_rel_liv_address, pattern='^same_address$')
         ],
-        EDIT_DATA_GET_VALUE: [
-            CallbackQueryHandler(get_edited_position_callback, pattern='^pos_idx_'),
-            CallbackQueryHandler(show_employee_edit_menu, pattern='^back_to_edit_menu$'),
-            MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_edited_data_value)
-        ],
+        EDIT_DATA_GET_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_edited_data_value)],
         EDIT_DATA_GET_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), save_data_with_reason)],
         AWAITING_RESET_2FA_CONFIRM: [
             CallbackQueryHandler(finalize_reset_2fa, pattern='^confirm_reset_yes$'), 

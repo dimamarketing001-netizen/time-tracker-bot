@@ -990,12 +990,27 @@ async def request_edit_data_value(update: Update, context: ContextTypes.DEFAULT_
     if 'date' in field:
         message_text += " в формате ГГГГ-ММ-ДД (например, 2025-12-31)"
         
-    # --- ЛОГИКА ДЛЯ ВЫБОРА ДОЛЖНОСТИ ПРИ РЕДАКТИРОВАНИИ ---
+    # --- ИЗМЕНЕНИЕ: ЛОГИКА ДЛЯ ВЫБОРА ДОЛЖНОСТИ (INLINE) ---
     if field == 'position':
-        reply_keyboard = [AVAILABLE_POSITIONS[i:i+2] for i in range(0, len(AVAILABLE_POSITIONS), 2)]
-        reply_keyboard.append(["❌ Отмена"])
-        message_text = "Выберите новую должность из списка или введите вручную:"
+        # Генерируем Inline кнопки с индексами (pos_idx_0, pos_idx_1...)
+        buttons = []
+        for i, pos in enumerate(AVAILABLE_POSITIONS):
+            buttons.append(InlineKeyboardButton(pos, callback_data=f"pos_idx_{i}"))
+        
+        # Группируем по 2 в ряд
+        keyboard_rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
+        
+        # Добавляем кнопку отмены
+        keyboard_rows.append([InlineKeyboardButton("❌ Отмена", callback_data="back_to_edit_menu")])
+        
+        await query.edit_message_text(
+            f"Редактирование поля: {field_name}\nВыберите новую должность:", 
+            reply_markup=InlineKeyboardMarkup(keyboard_rows)
+        )
+        # Мы остаемся в состоянии получения значения, но теперь ждем callback, а не текст
+        return EDIT_DATA_GET_VALUE
 
+    # Остальная логика для времени и текста
     elif field == 'default_start_time':
         reply_keyboard = [["09:00", "10:00", "11:00", "12:00", "13:00"], ["❌ Отмена"]]
     elif field == 'default_end_time':
@@ -1014,6 +1029,39 @@ async def request_edit_data_value(update: Update, context: ContextTypes.DEFAULT_
     )
 
     return EDIT_DATA_GET_VALUE
+
+async def get_edited_position_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает выбор должности из Inline-кнопок при редактировании."""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    position = "Неизвестно"
+    
+    # Декодируем индекс обратно в название
+    if data.startswith("pos_idx_"):
+        idx = int(data.split('_')[2])
+        if 0 <= idx < len(AVAILABLE_POSITIONS):
+            position = AVAILABLE_POSITIONS[idx]
+    
+    # Сохраняем значение
+    context.user_data['new_field_value'] = position
+    
+    # Готовимся к запросу причины (переходим к тексту)
+    cancel_kb = ReplyKeyboardMarkup([["❌ Отмена"]], resize_keyboard=True)
+    
+    # Удаляем меню с кнопками должностей
+    await query.edit_message_text(f"Выбрана должность: {position}")
+    
+    # Отправляем новое сообщение с просьбой ввести причину
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="Значение принято. Теперь введите *краткую причину* изменения:",
+        reply_markup=cancel_kb,
+        parse_mode='Markdown'
+    )
+    
+    return EDIT_DATA_GET_REASON
 
 async def get_edited_data_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Получает новое значение и запрашивает причину изменения."""
@@ -2288,7 +2336,11 @@ admin_conv = ConversationHandler(
             MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_rel_liv_address),
             CallbackQueryHandler(get_rel_liv_address, pattern='^same_address$')
         ],
-        EDIT_DATA_GET_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_edited_data_value)],
+        EDIT_DATA_GET_VALUE: [
+            CallbackQueryHandler(get_edited_position_callback, pattern='^pos_idx_'),
+            CallbackQueryHandler(show_employee_edit_menu, pattern='^back_to_edit_menu$'),
+            MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_edited_data_value)
+        ],
         EDIT_DATA_GET_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), save_data_with_reason)],
         AWAITING_RESET_2FA_CONFIRM: [
             CallbackQueryHandler(finalize_reset_2fa, pattern='^confirm_reset_yes$'), 

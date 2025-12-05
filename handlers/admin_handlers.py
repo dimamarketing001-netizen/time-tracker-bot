@@ -1032,36 +1032,59 @@ async def request_edit_data_value(update: Update, context: ContextTypes.DEFAULT_
 
 async def get_edited_position_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает выбор должности из Inline-кнопок при редактировании."""
-    query = update.callback_query
-    await query.answer()
-    
-    data = query.data
-    position = "Неизвестно"
-    
-    # Декодируем индекс обратно в название
-    if data.startswith("pos_idx_"):
-        idx = int(data.split('_')[2])
-        if 0 <= idx < len(AVAILABLE_POSITIONS):
-            position = AVAILABLE_POSITIONS[idx]
-    
-    # Сохраняем значение
-    context.user_data['new_field_value'] = position
-    
-    # Готовимся к запросу причины (переходим к тексту)
-    cancel_kb = ReplyKeyboardMarkup([["❌ Отмена"]], resize_keyboard=True)
-    
-    # Удаляем меню с кнопками должностей
-    await query.edit_message_text(f"Выбрана должность: {position}")
-    
-    # Отправляем новое сообщение с просьбой ввести причину
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text="Значение принято. Теперь введите *краткую причину* изменения:",
-        reply_markup=cancel_kb,
-        parse_mode='Markdown'
-    )
-    
-    return EDIT_DATA_GET_REASON
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        data = query.data
+        logger.info(f"DEBUG: callback caught: {data}")  # Логируем нажатие
+        
+        position = "Неизвестно"
+        
+        # Декодируем индекс обратно в название
+        if data.startswith("pos_idx_"):
+            parts = data.split('_')
+            # Проверка, что формат верный (pos, idx, ЧИСЛО)
+            if len(parts) >= 3 and parts[2].isdigit():
+                idx = int(parts[2])
+                if 0 <= idx < len(AVAILABLE_POSITIONS):
+                    position = AVAILABLE_POSITIONS[idx]
+                else:
+                    logger.error(f"DEBUG: Index {idx} out of bounds for positions list")
+            else:
+                logger.error(f"DEBUG: Invalid data format: {data}")
+        
+        # Сохраняем значение
+        context.user_data['new_field_value'] = position
+        logger.info(f"DEBUG: Position saved: {position}")
+        
+        # Готовимся к запросу причины (переходим к тексту)
+        cancel_kb = ReplyKeyboardMarkup([["❌ Отмена"]], resize_keyboard=True)
+        
+        # Удаляем меню с кнопками должностей (reply_markup=None уберет кнопки)
+        await query.edit_message_text(f"Выбрана должность: {position}", reply_markup=None)
+        
+        # Отправляем новое сообщение с просьбой ввести причину
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="Значение принято. Теперь введите *краткую причину* изменения:",
+            reply_markup=cancel_kb,
+            parse_mode='Markdown'
+        )
+        
+        return EDIT_DATA_GET_REASON
+
+    except Exception as e:
+        logger.error(f"CRITICAL ERROR in get_edited_position_callback: {e}", exc_info=True)
+        # Пытаемся сообщить пользователю об ошибке, если возможно
+        try:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="❌ Произошла ошибка при выборе должности. Попробуйте еще раз или нажмите Отмена."
+            )
+        except:
+            pass
+        return EDIT_DATA_GET_VALUE
 
 async def get_edited_data_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Получает новое значение и запрашивает причину изменения."""

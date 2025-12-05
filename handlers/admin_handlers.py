@@ -360,7 +360,7 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     phone = update.message.text.strip()
     context.user_data['new_employee']['personal_phone'] = phone
     
-    positions = ["Кассир", "Инспектор ФБ", "Оператор", "Чат менеджер", "СБ", "Администратор", "Логист", "Менеджер АХО", "Тренинг-менеджер", "Партнерский менеджер"]
+    positions = ["Кассир", "Инспектор ФБ", "Оператор", "Чат менеджер", "СБ", "Администратор", "Логист", "Менеджер АХО"]
     buttons = [InlineKeyboardButton(pos, callback_data=f"pos_{pos}") for pos in positions]
     keyboard_rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
     reply_markup = InlineKeyboardMarkup(keyboard_rows)
@@ -884,7 +884,11 @@ async def get_rel_liv_address(update: Update, context: ContextTypes.DEFAULT_TYPE
         pass 
     else:
         await update.message.reply_text(success_text)
-
+        
+    # Возвращаемся в меню родственников (нужно обновить update для вызова функции или отправить сообщение вручную)
+    # Проще вызвать функцию меню, но нужно подготовить dummy update или просто отправить текст с кнопками.
+    # Давайте отправим текст с кнопкой возврата.
+    
     keyboard = [[InlineKeyboardButton("🔙 К списку родственников", callback_data='manage_relatives')]]
     # Если это было текстовое сообщение
     if not update.callback_query:

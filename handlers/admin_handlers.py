@@ -1211,14 +1211,15 @@ async def schedule_select_date_2(update: Update, context: ContextTypes.DEFAULT_T
     return await schedule_show_type_selector(update, context)
 
 async def schedule_show_type_selector(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Шаг 5: Показывает кнопки выбора типа изменения (Выходной, Рабочее время)."""
+    """Шаг 5: Показывает кнопки выбора типа изменения."""
     query = update.callback_query
     await query.answer()
 
     keyboard = [
         [InlineKeyboardButton("Полностью выходной/отгул", callback_data='sched_type_DAY_OFF')],
         [InlineKeyboardButton("Больничный", callback_data='sched_type_SICK_LEAVE')],
-        [InlineKeyboardButton("Изменить рабочее время", callback_data='sched_type_WORK_TIME')],
+        [InlineKeyboardButton("Указать РАБОЧЕЕ время", callback_data='sched_type_WORK_TIME')], 
+        [InlineKeyboardButton("Указать время ОТСУТСТВИЯ", callback_data='sched_type_ABSENCE_TIME')], 
         [InlineKeyboardButton("⬅️ Назад", callback_data='back_to_positions')],
     ]
     
@@ -1231,8 +1232,6 @@ async def schedule_show_type_selector(update: Update, context: ContextTypes.DEFA
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return SCHEDULE_SELECT_TYPE
-
-# Файл: handlers/admin_handlers.py
 
 async def show_deal_conflict_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE, deals: list) -> int:
     """Показывает сообщение о конфликтующих сделках и кнопки подтверждения."""
@@ -1261,32 +1260,119 @@ async def show_deal_conflict_confirmation(update: Update, context: ContextTypes.
 
 async def save_schedule_changes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Финальная функция сохранения изменений в расписании."""
-    change_type = context.user_data['schedule_change_type']
+    change_type = context.user_data.get('schedule_change_type')
+    time_mode = context.user_data.get('schedule_time_mode', 'work')
+    
     employee_id = context.user_data['employee_to_edit_id']
-    date1 = context.user_data['schedule_date_1']
-    date2 = context.user_data.get('schedule_date_2', date1)
+    date1_str = context.user_data['schedule_date_1']
+    date2_str = context.user_data.get('schedule_date_2', date1_str)
     
-    is_day_off = False
-    start_time = None
-    end_time = None
-    
-    if change_type in ['DAY_OFF', 'SICK_LEAVE']:
-        is_day_off = True
-    elif change_type == 'WORK_TIME':
-        is_day_off = False
-        start_time = context.user_data['schedule_start_time']
-        end_time = context.user_data['schedule_end_time']
-    
+    input_start = context.user_data.get('schedule_start_time')
+    input_end = context.user_data.get('schedule_end_time')
+
     try:
-        await db_manager.set_schedule_override_for_period(
-            employee_id=employee_id,
-            start_date_str=date1,
-            end_date_str=date2,
-            is_day_off=is_day_off,
-            start_time=start_time,
-            end_time=end_time
-        )
-        success_message = f"✅ График успешно изменен для периода с {date1} по {date2}."
+        # === ВАРИАНТ 1: Обычный режим (День, Больничный, или Жесткое рабочее время) ===
+        if change_type in ['DAY_OFF', 'SICK_LEAVE'] or time_mode == 'work':
+            is_day_off = False
+            start_t = None
+            end_t = None
+            
+            if change_type in ['DAY_OFF', 'SICK_LEAVE']:
+                is_day_off = True
+            elif time_mode == 'work':
+                is_day_off = False
+                start_t = input_start
+                end_t = input_end
+            
+            # Сохраняем сразу на весь период (как и было раньше)
+            await db_manager.set_schedule_override_for_period(
+                employee_id=employee_id,
+                start_date_str=date1_str,
+                end_date_str=date2_str,
+                is_day_off=is_day_off,
+                start_time=start_t,
+                end_time=end_t,
+                comment="Изменено администратором"
+            )
+
+        # === ВАРИАНТ 2: Режим "ОТСУТСТВИЕ" (Сложный расчет) ===
+        elif time_mode == 'absence':
+            # Нам нужно пройтись по каждому дню периода, получить текущий график и "вычесть" отсутствие
+            curr_date = date.fromisoformat(date1_str)
+            end_date_obj = date.fromisoformat(date2_str)
+            
+            # Парсим время отсутствия
+            def parse_time(t_str):
+                return datetime.strptime(t_str, '%H:%M').time()
+            
+            abs_start = parse_time(input_start)
+            abs_end = parse_time(input_end)
+
+            while curr_date <= end_date_obj:
+                # 1. Получаем текущий график на этот день (учитывая дефолты и уже существующие оверрайды)
+                base_schedule_list = await db_manager.get_employee_schedule_for_period(employee_id, curr_date, curr_date)
+                
+                if base_schedule_list:
+                    day_sched = base_schedule_list[0]
+                    
+                    # Если день рабочий и есть время
+                    if day_sched['status'] == 'Работа' and day_sched['start_time'] and day_sched['end_time']:
+                        
+                        # Хелпер для конвертации timedelta/str -> time
+                        def to_time(val):
+                            if isinstance(val, str): 
+                                try: return datetime.strptime(val, '%H:%M:%S').time()
+                                except: return datetime.strptime(val, '%H:%M').time()
+                            if isinstance(val, timedelta): return (datetime.min + val).time()
+                            if isinstance(val, time): return val
+                            return None
+
+                        ws = to_time(day_sched['start_time']) # Work Start
+                        we = to_time(day_sched['end_time'])   # Work End
+                        
+                        if ws and we:
+                            new_start = ws
+                            new_end = we
+                            is_day_off = False
+                            comment = f"Отсутствие {input_start}-{input_end}"
+
+                            # --- ЛОГИКА ПЕРЕСЕЧЕНИЙ (из Early Leave) ---
+                            
+                            # 1. Отсутствие перекрывает весь день
+                            if abs_start <= ws and abs_end >= we:
+                                is_day_off = True
+                                comment = "Отсутствие весь день"
+                            
+                            # 2. Ранний уход (отсутствие в конце дня)
+                            elif abs_start > ws and abs_start < we and abs_end >= we:
+                                new_end = abs_start
+                                comment = f"Уход раньше ({input_start})"
+                                
+                            # 3. Опоздание (отсутствие в начале дня)
+                            elif abs_start <= ws and abs_end > ws and abs_end < we:
+                                new_start = abs_end
+                                comment = f"Поздний приход ({input_end})"
+                                
+                            # 4. Разрыв смены (посередине)
+                            elif abs_start > ws and abs_end < we:
+                                # БД не поддерживает 2 интервала, оставляем границы, но пишем коммент
+                                comment = f"Отсутствие {input_start}-{input_end}"
+                                # Границы (ws, we) не меняем, так как сотрудник "на работе", но с дыркой
+
+                            # Сохраняем день в БД
+                            await db_manager.set_schedule_override_for_period(
+                                employee_id=employee_id,
+                                start_date_str=curr_date.isoformat(),
+                                end_date_str=curr_date.isoformat(),
+                                is_day_off=is_day_off,
+                                start_time=new_start.strftime('%H:%M'),
+                                end_time=new_end.strftime('%H:%M'),
+                                comment=comment
+                            )
+
+                curr_date += timedelta(days=1)
+
+        success_message = f"✅ График успешно изменен для периода с {date1_str} по {date2_str}."
         if update.callback_query:
             await update.callback_query.edit_message_text(success_message)
         else:
@@ -1300,8 +1386,8 @@ async def save_schedule_changes(update: Update, context: ContextTypes.DEFAULT_TY
         else:
             await update.message.reply_text(error_message)
             
-    # Очищаем все временные данные по изменению графика
-    for key in ['schedule_edit_mode', 'schedule_date_1', 'schedule_date_2', 'schedule_change_type', 'schedule_start_time', 'schedule_end_time']:
+    # Очистка
+    for key in ['schedule_edit_mode', 'schedule_date_1', 'schedule_date_2', 'schedule_change_type', 'schedule_start_time', 'schedule_end_time', 'schedule_time_mode']:
         context.user_data.pop(key, None)
         
     return await show_schedule_main_menu(update, context)
@@ -1336,11 +1422,19 @@ async def schedule_process_type(update: Update, context: ContextTypes.DEFAULT_TY
     change_type = query.data.split('_', 2)[2]
     context.user_data['schedule_change_type'] = change_type
     
-    if change_type == 'WORK_TIME':
+    # Логика для времени (Работа или Отсутствие)
+    if change_type in ['WORK_TIME', 'ABSENCE_TIME']:
         reply_keyboard = [["09:00", "10:00", "11:00", "12:00", "13:00"]]
+        
+        if change_type == 'ABSENCE_TIME':
+            context.user_data['schedule_time_mode'] = 'absence'
+            msg_text = "Введите время НАЧАЛА ОТСУТСТВИЯ (когда сотрудник уйдет):"
+        else:
+            context.user_data['schedule_time_mode'] = 'work'
+            msg_text = "Введите новое время НАЧАЛА РАБОТЫ (когда сотрудник должен прийти):"
 
         await query.edit_message_text(
-            "Выберите или введите новое ВРЕМЯ НАЧАЛА работы (в формате ЧЧ:ММ):",
+            f"{msg_text}\n(в формате ЧЧ:ММ)",
             reply_markup=InlineKeyboardMarkup([])
         )
         await query.message.reply_text(
@@ -1368,15 +1462,20 @@ async def schedule_process_type(update: Update, context: ContextTypes.DEFAULT_TY
             # Если конфликтов нет, сохраняем сразу
             return await save_schedule_changes(update, context)
 
-
 async def schedule_get_start_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Шаг 7: Получаем время начала и запрашиваем время окончания."""
     context.user_data['schedule_start_time'] = update.message.text
     reply_keyboard = [["18:00", "19:00", "20:00"]]
     await remove_reply_keyboard(update, context, "Время начала сохранено.")
     
+    mode = context.user_data.get('schedule_time_mode', 'work')
+    if mode == 'absence':
+        msg_text = "Теперь введите время ОКОНЧАНИЯ ОТСУТСТВИЯ (когда вернется или конец периода):"
+    else:
+        msg_text = "Теперь введите время ОКОНЧАНИЯ РАБОТЫ:"
+
     await update.message.reply_text(
-        "Теперь выберите или введите ВРЕМЯ ОКОНЧАНИЯ (в формате ЧЧ:ММ):",
+        f"{msg_text}\n(в формате ЧЧ:ММ)",
         reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
     )
     return SCHEDULE_GET_END_TIME
@@ -1390,22 +1489,33 @@ async def schedule_finalize_work_time(update: Update, context: ContextTypes.DEFA
     employee_id = context.user_data['employee_to_edit_id']
     date1 = context.user_data['schedule_date_1']
     date2 = context.user_data.get('schedule_date_2', date1)
+    
+    mode = context.user_data.get('schedule_time_mode', 'work')
 
     await update.message.reply_text("Проверяю конфликты со сделками...", reply_markup=ReplyKeyboardRemove())
 
-    conflicting_deals = await db_manager.find_conflicting_deals_for_schedule(
-        employee_id=employee_id,
-        start_date_str=date1,
-        end_date_str=date2,
-        work_start_time_str=start_time,
-        work_end_time_str=end_time
-    )
+    conflicting_deals = []
+
+    if mode == 'work':
+        conflicting_deals = await db_manager.find_conflicting_deals_for_schedule(
+            employee_id=employee_id,
+            start_date_str=date1,
+            end_date_str=date2,
+            work_start_time_str=start_time,
+            work_end_time_str=end_time
+        )
+    else: # mode == 'absence'
+        conflicting_deals = await db_manager.find_deals_inside_interval(
+            employee_id=employee_id,
+            start_date_str=date1,
+            end_date_str=date2,
+            interval_start_str=start_time,
+            interval_end_str=end_time
+        )
     
     if conflicting_deals:
-        # Если есть конфликты, показываем их и ждем подтверждения
         return await show_deal_conflict_confirmation(update, context, conflicting_deals)
     else:
-        # Если конфликтов нет, сохраняем сразу
         return await save_schedule_changes(update, context)
     
  

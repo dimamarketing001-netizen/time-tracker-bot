@@ -508,3 +508,19 @@ async def get_last_pending_request(employee_id: int, request_type: str = 'early_
 async def update_request_status(request_id: int, status: str):
     """Обновляет статус заявки."""
     await execute("UPDATE employee_requests SET status = %s WHERE id = %s", (status, request_id))
+
+async def find_deals_inside_interval(employee_id: int, start_date_str: str, end_date_str: str, interval_start_str: str, interval_end_str: str) -> List[Dict[str, Any]]:
+    """
+    Ищет сделки, которые попадают ВНУТРЬ указанного интервала времени (например, времени отсутствия).
+    """
+    query = """
+        SELECT deals_id, datetime_meeting
+        FROM CryptoDeals
+        WHERE employee_id = %s
+          AND status != 'closed'
+          AND DATE(datetime_meeting) BETWEEN %s AND %s
+          AND TIME(datetime_meeting) >= %s 
+          AND TIME(datetime_meeting) <= %s
+        ORDER BY datetime_meeting
+    """
+    return await fetch_all(query, (employee_id, start_date_str, end_date_str, interval_start_str, interval_end_str))

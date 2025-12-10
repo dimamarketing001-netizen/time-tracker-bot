@@ -714,3 +714,46 @@ async def operator_clock_out(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("❌ Ошибка Redis. Не удалось уйти с линии.")
         
     return ConversationHandler.END
+
+
+async def show_my_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает пользователю его собственную карточку."""
+    user_id = update.effective_user.id
+    employee = await db_manager.get_employee_by_telegram_id(user_id)
+    
+    if not employee:
+        await update.message.reply_text("Ваша карточка не найдена.")
+        return
+
+    
+    def safe(val): 
+        return str(val) if val is not None and val != "" else "-"
+
+    text = (
+        f"👤 *ВАША КАРТОЧКА*\n\n"
+        f"*ФИО:* {safe(employee['full_name'])}\n"
+        f"*Должность:* {safe(employee.get('position'))}\n"
+        f"*Город:* {safe(employee.get('city'))}\n"
+        f"*Роль:* {safe(employee.get('role'))}\n"
+        f"*Статус:* {safe(employee.get('status'))}\n\n"
+        
+        f"📞 *Контакты:*\n"
+        f"Личный: {safe(employee.get('personal_phone'))}\n"
+        f"Рабочий: {safe(employee.get('work_phone'))}\n\n"
+        
+        f"📅 *График:*\n"
+        f"Тип: {safe(employee.get('schedule_pattern'))}\n"
+        f"Стандартное время: {safe(employee.get('default_start_time'))} - {safe(employee.get('default_end_time'))}\n\n"
+        
+        f"🏠 *Адрес:* {safe(employee.get('living_address'))}\n"
+        f"Дата найма: {safe(employee.get('hire_date'))}"
+    )
+    
+    # Добавляем родственников
+    relatives = await db_manager.get_employee_relatives(employee['id'])
+    if relatives:
+        text += "\n\n👨‍👩‍👧 *Родственники:*"
+        for rel in relatives:
+            text += f"\n- {rel['relationship_type']}: {rel['last_name']} {rel['first_name']} ({safe(rel.get('phone_number'))})"
+
+    await update.message.reply_text(text, parse_mode='Markdown')

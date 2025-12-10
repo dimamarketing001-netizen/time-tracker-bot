@@ -70,7 +70,8 @@ ADMIN_MAIN_MENU = 0
 
     AWAITING_FIRE_EMPLOYEE_2FA,
     AWAITING_DELETE_EMPLOYEE_2FA,
-) = range(55)
+    VIEW_CARD_OPTIONS,
+) = range(56)
 
 
 # ========== СЛОВАРИ И ВСПОМОГАТЕЛЬНЫЕ ДАННЫЕ ==========
@@ -125,6 +126,7 @@ async def show_employee_card_menu(update: Update, context: ContextTypes.DEFAULT_
     keyboard = [
         [InlineKeyboardButton("➕ Добавить сотрудника", callback_data='admin_add_start')],
         [InlineKeyboardButton("✏️ Изменить карточку", callback_data='admin_edit_start')],
+        [InlineKeyboardButton("📂 Просмотр данных", callback_data='admin_view_card_start')], 
         [InlineKeyboardButton("⬅️ Назад в главное меню", callback_data='back_to_admin_panel')],
     ]
     await query.edit_message_text(
@@ -132,6 +134,23 @@ async def show_employee_card_menu(update: Update, context: ContextTypes.DEFAULT_
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return EMPLOYEE_CARD_MENU
+
+async def show_view_card_options(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Показывает выбор: посмотреть одного или скачать всех."""
+    query = update.callback_query
+    await query.answer()
+    
+    keyboard = [
+        [InlineKeyboardButton("👤 По сотруднику (выбор из списка)", callback_data='view_card_single')],
+        [InlineKeyboardButton("📥 Все сотрудники (файл)", callback_data='view_card_all_file')],
+        [InlineKeyboardButton("⬅️ Назад", callback_data='go_to_employee_card_menu')],
+    ]
+    
+    await query.edit_message_text(
+        "Как вы хотите просмотреть данные?",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return VIEW_CARD_OPTIONS
 
 async def show_schedule_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Показывает меню 'Рабочий график'."""
@@ -186,7 +205,8 @@ async def start_select_position(update: Update, context: ContextTypes.DEFAULT_TY
     action_map = {
         'admin_edit_start': 'edit_card',
         'admin_view_schedule_start': 'view_schedule',
-        'admin_edit_schedule_start': 'edit_schedule'
+        'admin_edit_schedule_start': 'edit_schedule',
+        'view_card_single': 'view_card_details'
     }
     
     # Если мы пришли из кнопки "Назад" (из списка сотрудников), то тип действия уже в памяти
@@ -205,34 +225,28 @@ async def start_select_position(update: Update, context: ContextTypes.DEFAULT_TY
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data='back_to_admin_panel')]])
         )
         return ADMIN_MAIN_MENU
-
-    # === ИСПРАВЛЕНИЕ НАЧАЛО ===
-    # Создаем словарь { "0": "Должность1", "1": "Должность2" } и сохраняем в память
-    # Это позволяет передавать в кнопке только короткий индекс "0", "1" и т.д.
+    
     position_map = {str(i): pos for i, pos in enumerate(positions)}
     context.user_data['position_map'] = position_map
 
     keyboard = []
     row = []
     for i, pos in enumerate(positions):
-        # В callback_data пишем sel_pos_0, sel_pos_1 и т.д. Это занимает очень мало байт.
-        # Само название (pos) остается только в тексте кнопки.
         row.append(InlineKeyboardButton(pos, callback_data=f"sel_pos_{i}"))
         if len(row) == 2:
             keyboard.append(row)
             row = []
     if row:
         keyboard.append(row)
-    # === ИСПРАВЛЕНИЕ КОНЕЦ ===
         
-    # Кнопка назад зависит от того, откуда пришли
     back_callback = 'go_to_employee_card_menu' if action_type == 'edit_card' else 'go_to_schedule_menu'
     keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data=back_callback)])
     
     titles = {
         'edit_card': "Изменение карточки",
         'view_schedule': "Просмотр графика",
-        'edit_schedule': "Изменение графика"
+        'edit_schedule': "Изменение графика",
+        'view_card_details': "Просмотр карточки"
     }
     
     await query.edit_message_text(
@@ -298,20 +312,13 @@ async def route_selected_employee(update: Update, context: ContextTypes.DEFAULT_
     action_type = context.user_data.get('admin_action_type')
     
     if action_type == 'edit_card':
-        # Логика редактирования карточки
         context.user_data['employee_to_edit_id'] = employee_id
-        # Вызываем функцию показа меню редактирования (нужно убедиться, что она принимает update)
-        # Нам нужно подменить update или просто вызвать логику
-        # Проще всего вызвать функцию show_employee_edit_menu, но она ожидает callback edit_emp_ или сохраненный ID
-        # ID мы сохранили выше.
         return await show_employee_edit_menu(update, context)
         
     elif action_type == 'view_schedule':
         # Логика просмотра графика
         context.user_data['view_employee_id'] = employee_id
-        
-        # Сразу переходим к выбору периода (минуя старый шаг выбора сотрудника из всех)
-        # Копируем логику из view_schedule_select_employee
+    
         keyboard = [
             [InlineKeyboardButton("Текущая неделя", callback_data='view_period_week')],
             [InlineKeyboardButton("Текущий месяц", callback_data='view_period_month')],
@@ -336,10 +343,99 @@ async def route_selected_employee(update: Update, context: ContextTypes.DEFAULT_
         # Логика изменения графика
         context.user_data['employee_to_edit_id'] = employee_id
         return await schedule_start(update, context)
+    
+    elif action_type == 'view_card_details':
+        employee = await db_manager.get_employee_by_id(employee_id)
+        
+        def safe(val): return str(val) if val is not None and val != "" else "-"
+
+        text = (
+            f"📂 *КАРТОЧКА СОТРУДНИКА*\n"
+            f"ID: {employee['id']}\n\n"
+            f"*ФИО:* {safe(employee['full_name'])}\n"
+            f"*Должность:* {safe(employee.get('position'))}\n"
+            f"*Город:* {safe(employee.get('city'))}\n"
+            f"*Роль:* {safe(employee.get('role'))}\n"
+            f"*Телефон:* {safe(employee.get('personal_phone'))}\n"
+            f"*Telegram ID:* {safe(employee.get('personal_telegram_id'))}\n"
+            f"*Username:* @{safe(employee.get('personal_telegram_username'))}\n\n"
+            f"*График:* {safe(employee.get('schedule_pattern'))} ({safe(employee.get('default_start_time'))}-{safe(employee.get('default_end_time'))})\n"
+            f"*Адрес:* {safe(employee.get('living_address'))}\n"
+            f"*Паспорт:* {safe(employee.get('passport_data'))}\n"
+            f"*ДР:* {safe(employee.get('birth_date'))}\n"
+        )
+        
+        relatives = await db_manager.get_employee_relatives(employee_id)
+        if relatives:
+            text += "\n👨‍👩‍👧 *Родственники:*"
+            for rel in relatives:
+                text += f"\n- {rel['relationship_type']}: {rel['last_name']} {rel['first_name']} ({safe(rel.get('phone_number'))})"
+        
+        keyboard = [
+            [InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_emp_{employee_id}")],
+            [InlineKeyboardButton("⬅️ К списку сотрудников", callback_data="back_to_positions")] # Вернет к списку
+        ]
+        
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        return SELECT_EMPLOYEE_FROM_LIST # Или можно вернуть ADMIN_MAIN_MENU, но так удобнее
         
     else:
         await query.edit_message_text("Ошибка: неизвестное действие.")
         return ADMIN_MAIN_MENU
+    
+async def generate_all_employees_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Генерирует CSV со всеми данными всех сотрудников."""
+    query = update.callback_query
+    await query.answer("Генерация файла...")
+    
+    employees = await db_manager.get_all_employees_full()
+    
+    if not employees:
+        await query.edit_message_text("Нет сотрудников в базе.")
+        return VIEW_CARD_OPTIONS
+
+    output = io.StringIO()
+    # Используем запятую или точку с запятой в зависимости от предпочтений Excel
+    writer = csv.writer(output, delimiter=';')
+    
+    # Заголовки
+    headers = [
+        'ID', 'ФИО', 'Должность', 'Город', 'Роль', 'Статус',
+        'Личный телефон', 'Рабочий телефон', 'Telegram ID', 'Username',
+        'График', 'Дата начала', 'Начало (чч:мм)', 'Конец (чч:мм)',
+        'Дата рождения', 'Дата найма',
+        'Паспорт', 'Кем выдан', 'Код подр.',
+        'Адрес регистрации', 'Адрес проживания'
+    ]
+    writer.writerow(headers)
+    
+    for emp in employees:
+        row = [
+            emp.get('id'), emp.get('full_name'), emp.get('position'), emp.get('city'), emp.get('role'), emp.get('status'),
+            emp.get('personal_phone'), emp.get('work_phone'), emp.get('personal_telegram_id'), emp.get('personal_telegram_username'),
+            emp.get('schedule_pattern'), emp.get('schedule_start_date'), emp.get('default_start_time'), emp.get('default_end_time'),
+            emp.get('birth_date'), emp.get('hire_date'),
+            emp.get('passport_data'), emp.get('passport_issued_by'), emp.get('passport_dept_code'),
+            emp.get('registration_address'), emp.get('living_address')
+        ]
+        # Заменяем None на пустую строку
+        row = [str(x) if x is not None else "" for x in row]
+        writer.writerow(row)
+        
+    output.seek(0)
+    # Используем utf-8-sig для корректного отображения кириллицы в Excel
+    bio = io.BytesIO(output.getvalue().encode('utf-8-sig'))
+    bio.name = f"All_Employees_Data_{date.today()}.csv"
+    
+    await context.bot.send_document(
+        chat_id=update.effective_chat.id,
+        document=bio,
+        caption=f"📂 Полная выгрузка данных сотрудников ({len(employees)} чел.)"
+    )
+    
+    keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data='go_to_employee_card_menu')]]
+    await query.edit_message_text("Файл отправлен.", reply_markup=InlineKeyboardMarkup(keyboard))
+    return VIEW_CARD_OPTIONS
     
 async def start_add_employee(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -2372,8 +2468,14 @@ admin_conv = ConversationHandler(
         # === УРОВЕНЬ 2: ПОДМЕНЮ ===
         EMPLOYEE_CARD_MENU: [
             CallbackQueryHandler(start_add_employee, pattern='^admin_add_start$'),
-            CallbackQueryHandler(start_select_position, pattern='^admin_edit_start$'), 
+            CallbackQueryHandler(start_select_position, pattern='^admin_edit_start$'),
+            CallbackQueryHandler(show_view_card_options, pattern='^admin_view_card_start$'),
             CallbackQueryHandler(admin_panel, pattern='^back_to_admin_panel$'),
+        ],
+        VIEW_CARD_OPTIONS: [
+            CallbackQueryHandler(start_select_position, pattern='^view_card_single$'),
+            CallbackQueryHandler(generate_all_employees_report, pattern='^view_card_all_file$'),
+            CallbackQueryHandler(show_employee_card_menu, pattern='^go_to_employee_card_menu$'),
         ],
         SCHEDULE_MAIN_MENU: [
             CallbackQueryHandler(start_select_position, pattern='^admin_view_schedule_start$'),

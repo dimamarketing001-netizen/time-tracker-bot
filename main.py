@@ -14,7 +14,7 @@ import db_manager
 from scheduler import start_scheduler
 import redis
 from handlers import user_handlers, admin_handlers, auth_handlers
-from utils import get_main_keyboard 
+from utils import get_main_keyboard, BTN_MY_CARD
 
 # Настройка логирования
 logging.basicConfig(
@@ -65,6 +65,7 @@ def main() -> None:
 
     # 1. Админские хендлеры
     application.add_handlers(admin_handlers.admin_handlers)
+    application.add_handler(MessageHandler(filters.Regex(f"^{BTN_MY_CARD}$"), user_handlers.show_my_card))
 
     # 2. Вход на смену
     on_handler = ConversationHandler(
@@ -98,7 +99,6 @@ def main() -> None:
                 CallbackQueryHandler(user_handlers.request_deal_approval_from_sb, pattern='^request_deal_approval_')
             ],
             
-            # --- НОВЫЕ СОСТОЯНИЯ ДЛЯ РАННЕГО УХОДА ---
             user_handlers.GET_EARLY_LEAVE_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, user_handlers.get_early_leave_reason)],
             
             user_handlers.SELECT_LEAVE_TYPE: [

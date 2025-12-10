@@ -524,3 +524,21 @@ async def find_deals_inside_interval(employee_id: int, start_date_str: str, end_
         ORDER BY datetime_meeting
     """
     return await fetch_all(query, (employee_id, start_date_str, end_date_str, interval_start_str, interval_end_str))
+
+async def get_all_employees_full() -> List[Dict[str, Any]]:
+    """Возвращает ПОЛНЫЕ данные всех сотрудников (включая уволенных, если нужно, но пока берем активных)."""
+    # Выбираем все поля, кроме технических (токенов)
+    query = """
+        SELECT 
+            id, full_name, position, city, role, 
+            personal_phone, work_phone, personal_telegram_id, personal_telegram_username,
+            schedule_pattern, schedule_start_date, default_start_time, default_end_time,
+            birth_date, hire_date, 
+            passport_data, passport_issued_by, passport_dept_code,
+            registration_address, living_address,
+            status
+        FROM employees 
+        WHERE termination_date IS NULL 
+        ORDER BY full_name
+    """
+    return await fetch_all(query)

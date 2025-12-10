@@ -11,7 +11,7 @@ import io
 import pytz
 from config import CITY_TIMEZONES, DEFAULT_TIMEZONE
 
-matplotlib.use('Agg') 
+matplotlib.use('Agg')
 
 def get_timezone_for_city(city_name: str) -> pytz.timezone:
     """
@@ -21,7 +21,6 @@ def get_timezone_for_city(city_name: str) -> pytz.timezone:
     if not city_name:
         return pytz.timezone(DEFAULT_TIMEZONE)
     
-    # Нормализация: убираем пробелы, делаем 'Москва' из 'москва '
     clean_city = city_name.strip().title()
     
     # Ищем прямое совпадение
@@ -112,7 +111,7 @@ def get_main_keyboard(role: str) -> ReplyKeyboardMarkup:
 
     keyboard = [
         [KeyboardButton("🟢 Начать смену"), KeyboardButton("🔴 Закончить смену")],
-        [KeyboardButton("📅 Мой график")]
+        [KeyboardButton("📅 Мой график"), KeyboardButton("👤 Моя карточка")],
     ]
     
     if safe_role in ['admin', 'security']:

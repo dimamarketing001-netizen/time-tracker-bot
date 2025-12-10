@@ -1270,8 +1270,13 @@ async def save_schedule_changes(update: Update, context: ContextTypes.DEFAULT_TY
     input_start = context.user_data.get('schedule_start_time')
     input_end = context.user_data.get('schedule_end_time')
 
+    # Получаем роль админа для правильной клавиатуры
+    user_id = update.effective_user.id
+    admin_emp = await db_manager.get_employee_by_telegram_id(user_id)
+    role = admin_emp.get('role', 'employee') if admin_emp else 'employee'
+
     try:
-        # === ВАРИАНТ 1: Обычный режим (День, Больничный, или Жесткое рабочее время) ===
+        # === ВАРИАНТ 1: Обычный режим ===
         if change_type in ['DAY_OFF', 'SICK_LEAVE'] or time_mode == 'work':
             is_day_off = False
             start_t = None
@@ -1284,7 +1289,6 @@ async def save_schedule_changes(update: Update, context: ContextTypes.DEFAULT_TY
                 start_t = input_start
                 end_t = input_end
             
-            # Сохраняем сразу на весь период (как и было раньше)
             await db_manager.set_schedule_override_for_period(
                 employee_id=employee_id,
                 start_date_str=date1_str,
@@ -1295,13 +1299,11 @@ async def save_schedule_changes(update: Update, context: ContextTypes.DEFAULT_TY
                 comment="Изменено администратором"
             )
 
-        # === ВАРИАНТ 2: Режим "ОТСУТСТВИЕ" (Сложный расчет) ===
+        # === ВАРИАНТ 2: Режим "ОТСУТСТВИЕ" ===
         elif time_mode == 'absence':
-            # Нам нужно пройтись по каждому дню периода, получить текущий график и "вычесть" отсутствие
             curr_date = date.fromisoformat(date1_str)
             end_date_obj = date.fromisoformat(date2_str)
             
-            # Парсим время отсутствия
             def parse_time(t_str):
                 return datetime.strptime(t_str, '%H:%M').time()
             
@@ -1309,16 +1311,12 @@ async def save_schedule_changes(update: Update, context: ContextTypes.DEFAULT_TY
             abs_end = parse_time(input_end)
 
             while curr_date <= end_date_obj:
-                # 1. Получаем текущий график на этот день (учитывая дефолты и уже существующие оверрайды)
                 base_schedule_list = await db_manager.get_employee_schedule_for_period(employee_id, curr_date, curr_date)
                 
                 if base_schedule_list:
                     day_sched = base_schedule_list[0]
-                    
-                    # Если день рабочий и есть время
                     if day_sched['status'] == 'Работа' and day_sched['start_time'] and day_sched['end_time']:
                         
-                        # Хелпер для конвертации timedelta/str -> time
                         def to_time(val):
                             if isinstance(val, str): 
                                 try: return datetime.strptime(val, '%H:%M:%S').time()
@@ -1327,8 +1325,8 @@ async def save_schedule_changes(update: Update, context: ContextTypes.DEFAULT_TY
                             if isinstance(val, time): return val
                             return None
 
-                        ws = to_time(day_sched['start_time']) # Work Start
-                        we = to_time(day_sched['end_time'])   # Work End
+                        ws = to_time(day_sched['start_time'])
+                        we = to_time(day_sched['end_time'])
                         
                         if ws and we:
                             new_start = ws
@@ -1336,30 +1334,18 @@ async def save_schedule_changes(update: Update, context: ContextTypes.DEFAULT_TY
                             is_day_off = False
                             comment = f"Отсутствие {input_start}-{input_end}"
 
-                            # --- ЛОГИКА ПЕРЕСЕЧЕНИЙ (из Early Leave) ---
-                            
-                            # 1. Отсутствие перекрывает весь день
                             if abs_start <= ws and abs_end >= we:
                                 is_day_off = True
                                 comment = "Отсутствие весь день"
-                            
-                            # 2. Ранний уход (отсутствие в конце дня)
                             elif abs_start > ws and abs_start < we and abs_end >= we:
                                 new_end = abs_start
                                 comment = f"Уход раньше ({input_start})"
-                                
-                            # 3. Опоздание (отсутствие в начале дня)
                             elif abs_start <= ws and abs_end > ws and abs_end < we:
                                 new_start = abs_end
                                 comment = f"Поздний приход ({input_end})"
-                                
-                            # 4. Разрыв смены (посередине)
                             elif abs_start > ws and abs_end < we:
-                                # БД не поддерживает 2 интервала, оставляем границы, но пишем коммент
                                 comment = f"Отсутствие {input_start}-{input_end}"
-                                # Границы (ws, we) не меняем, так как сотрудник "на работе", но с дыркой
 
-                            # Сохраняем день в БД
                             await db_manager.set_schedule_override_for_period(
                                 employee_id=employee_id,
                                 start_date_str=curr_date.isoformat(),
@@ -1369,28 +1355,43 @@ async def save_schedule_changes(update: Update, context: ContextTypes.DEFAULT_TY
                                 end_time=new_end.strftime('%H:%M'),
                                 comment=comment
                             )
-
                 curr_date += timedelta(days=1)
 
-        success_message = f"✅ График успешно изменен для периода с {date1_str} по {date2_str}."
-        if update.callback_query:
-            await update.callback_query.edit_message_text(success_message)
-        else:
-            await update.message.reply_text(success_message)
+        # 1. ОТПРАВЛЯЕМ СООБЩЕНИЕ С ГЛАВНОЙ КЛАВИАТУРОЙ (ВОССТАНОВЛЕНИЕ КНОПОК)
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"✅ График успешно изменен ({date1_str} - {date2_str}).",
+            reply_markup=get_main_keyboard(role)
+        )
             
     except Exception as e:
         logger.error(f"Error in save_schedule_changes: {e}")
-        error_message = f"❌ Произошла ошибка при сохранении: {e}"
-        if update.callback_query:
-            await update.callback_query.edit_message_text(error_message)
-        else:
-            await update.message.reply_text(error_message)
-            
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"❌ Произошла ошибка при сохранении: {e}",
+            reply_markup=get_main_keyboard(role)
+        )
+
     # Очистка
     for key in ['schedule_edit_mode', 'schedule_date_1', 'schedule_date_2', 'schedule_change_type', 'schedule_start_time', 'schedule_end_time', 'schedule_time_mode']:
         context.user_data.pop(key, None)
+    
+    # 2. ОТПРАВЛЯЕМ НОВОЕ ИНЛАЙН-МЕНЮ "РАБОЧИЙ ГРАФИК"
+    # Мы не вызываем show_schedule_main_menu, а отправляем его вручную, так как update может быть текстовым
+    keyboard = [
+        [InlineKeyboardButton("📊 По сотруднику", callback_data='admin_view_schedule_start')],
+        [InlineKeyboardButton("📥 График ВСЕХ (файл)", callback_data='view_all_schedule_start')],
+        [InlineKeyboardButton("✏️ Изменить график сотрудника", callback_data='admin_edit_schedule_start')],
+        [InlineKeyboardButton("🗓️ Посмотреть отгулы/больничные", callback_data='view_absences_start')],
+        [InlineKeyboardButton("⬅️ Назад в главное меню", callback_data='back_to_admin_panel')],
+    ]
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="Меню: Рабочий график",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
         
-    return await show_schedule_main_menu(update, context)
+    return SCHEDULE_MAIN_MENU
 
 async def handle_deal_move_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает ответ пользователя на конфликт сделок."""
@@ -1401,7 +1402,9 @@ async def handle_deal_move_confirmation(update: Update, context: ContextTypes.DE
 
     if decision == 'yes':
         # Отправляем уведомление и сохраняем
+        # Редактируем сообщение с предупреждением
         await query.edit_message_text("Сохраняю изменения... Вам придет уведомление о необходимости переноса сделок.")
+        
         await context.bot.send_message(
             chat_id=query.from_user.id,
             text="❗️*Напоминание:*\nНе забудьте перенести сделки, которые конфликтуют с новым графиком сотрудника.",
@@ -1409,9 +1412,36 @@ async def handle_deal_move_confirmation(update: Update, context: ContextTypes.DE
         )
         return await save_schedule_changes(update, context)
     else: # no
-        # Отменяем и возвращаем в меню "Рабочий график"
-        await query.edit_message_text("Изменение графика отменено.")
-        return await show_schedule_main_menu(update, context)
+        # Получаем роль для клавиатуры
+        user_id = update.effective_user.id
+        admin_emp = await db_manager.get_employee_by_telegram_id(user_id)
+        role = admin_emp.get('role', 'employee') if admin_emp else 'employee'
+
+        # Удаляем или редактируем сообщение с вопросом
+        await query.edit_message_text("❌ Изменение графика отменено.")
+
+        # ВОССТАНАВЛИВАЕМ КЛАВИАТУРУ
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="Вы вернулись в меню графиков.",
+            reply_markup=get_main_keyboard(role)
+        )
+        
+        # Показываем меню графиков заново
+        keyboard = [
+            [InlineKeyboardButton("📊 По сотруднику", callback_data='admin_view_schedule_start')],
+            [InlineKeyboardButton("📥 График ВСЕХ (файл)", callback_data='view_all_schedule_start')],
+            [InlineKeyboardButton("✏️ Изменить график сотрудника", callback_data='admin_edit_schedule_start')],
+            [InlineKeyboardButton("🗓️ Посмотреть отгулы/больничные", callback_data='view_absences_start')],
+            [InlineKeyboardButton("⬅️ Назад в главное меню", callback_data='back_to_admin_panel')],
+        ]
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="Меню: Рабочий график",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+        return SCHEDULE_MAIN_MENU
 
 
 async def schedule_process_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1465,7 +1495,7 @@ async def schedule_process_type(update: Update, context: ContextTypes.DEFAULT_TY
 async def schedule_get_start_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Шаг 7: Получаем время начала и запрашиваем время окончания."""
     context.user_data['schedule_start_time'] = update.message.text
-    reply_keyboard = [["18:00", "19:00", "20:00"]]
+    reply_keyboard = [["18:00", "20:00", "21:00", "22:00", "23:00"]]
     await remove_reply_keyboard(update, context, "Время начала сохранено.")
     
     mode = context.user_data.get('schedule_time_mode', 'work')

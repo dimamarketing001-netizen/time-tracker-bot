@@ -13,6 +13,8 @@ from config import CITY_TIMEZONES, DEFAULT_TIMEZONE
 
 matplotlib.use('Agg')
 
+BTN_MY_CARD = "👤 Моя карточка"
+
 def get_timezone_for_city(city_name: str) -> pytz.timezone:
     """
     Возвращает объект timezone на основе названия города.

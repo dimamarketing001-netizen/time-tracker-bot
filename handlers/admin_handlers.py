@@ -80,6 +80,7 @@ EDITABLE_FIELDS = {
     'middle_name': 'Отчество',
     'position': 'Должность',
     'personal_phone': 'Личный телефон', 'work_phone': 'Рабочий телефон',
+    'personal_telegram_id': 'Telegram Аккаунт (ID)',
     'city': 'Город', 'role': 'Роль',
     'schedule_pattern': 'График работы (5/2, 2/2)',
     'schedule_start_date': 'Дата первой смены (для 2/2)',
@@ -970,6 +971,13 @@ async def request_edit_data_value(update: Update, context: ContextTypes.DEFAULT_
     field_name = EDITABLE_FIELDS.get(field, field)
     message_text = f"Введите новое значение для поля '{field_name}'"
 
+    if field == 'personal_telegram_id':
+        message_text = (
+            f"Редактирование **{field_name}**.\n\n"
+            "Пожалуйста, нажмите на 📎 (скрепку), выберите **'Контакт'** и отправьте контакт нужного сотрудника.\n"
+            "Бот автоматически извлечет новый ID."
+        )
+
     if 'date' in field:
         message_text += " в формате ГГГГ-ММ-ДД (например, 2025-12-31)"
         
@@ -994,8 +1002,47 @@ async def request_edit_data_value(update: Update, context: ContextTypes.DEFAULT_
 async def get_edited_data_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Получает новое значение и запрашивает причину изменения."""
     field = context.user_data['current_edit_field']
-    value = update.message.text.strip()
     employee_id = context.user_data['employee_to_edit_id']
+    
+    value = None
+
+    if update.message.contact:
+        if field != 'personal_telegram_id':
+             await update.message.reply_text("❌ Для этого поля ввод контактом не поддерживается. Введите текст.")
+             return EDIT_DATA_GET_VALUE
+        
+        contact = update.message.contact
+        if not contact.user_id:
+             await update.message.reply_text("❌ В этом контакте нет Telegram ID. Попробуйте другой.")
+             return EDIT_DATA_GET_VALUE
+             
+        existing = await db_manager.find_employee_by_field('personal_telegram_id', contact.user_id)
+        if existing and existing['id'] != employee_id:
+            await update.message.reply_text(
+                f"❌ Дубликат! Этот Telegram ID уже привязан к сотруднику: {existing['full_name']}.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return EDIT_DATA_GET_VALUE
+            
+        value = str(contact.user_id)
+        
+        try:
+            chat = await context.bot.get_chat(contact.user_id)
+            if chat.username:
+                 context.user_data['new_telegram_username'] = chat.username
+        except:
+            pass
+            
+    elif update.message.text:
+        value = update.message.text.strip()
+        
+        if field == 'personal_telegram_id':
+             if not value.isdigit():
+                 await update.message.reply_text("❌ ID должен состоять только из цифр. Лучше отправьте контакт через скрепку.")
+                 return EDIT_DATA_GET_VALUE
+    else:
+        await update.message.reply_text("❌ Непонятный формат данных.")
+        return EDIT_DATA_GET_VALUE
 
     if 'date' in field:
         import re
@@ -1045,6 +1092,11 @@ async def save_data_with_reason(update: Update, context: ContextTypes.DEFAULT_TY
 
         # Обновляем поле
         await db_manager.update_employee_field(employee_id, field, new_value)
+
+        if field == 'personal_telegram_id':
+             new_username = context.user_data.pop('new_telegram_username', None)
+             if new_username:
+                 await db_manager.update_employee_field(employee_id, 'personal_telegram_username', new_username)
         
         # --- СИНХРОНИЗАЦИЯ FULL_NAME ---
         if field in ['last_name', 'first_name', 'middle_name']:
@@ -2273,7 +2325,7 @@ admin_conv = ConversationHandler(
             MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_rel_liv_address),
             CallbackQueryHandler(get_rel_liv_address, pattern='^same_address$')
         ],
-        EDIT_DATA_GET_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_edited_data_value)],
+        EDIT_DATA_GET_VALUE: [MessageHandler((filters.TEXT | filters.CONTACT) & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), get_edited_data_value)],
         EDIT_DATA_GET_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ Отмена$"), save_data_with_reason)],
         AWAITING_RESET_2FA_CONFIRM: [
             CallbackQueryHandler(finalize_reset_2fa, pattern='^confirm_reset_yes$'), 

@@ -190,7 +190,9 @@ async def update_employee_field(employee_id: int, field: str, value: Any):
         'passport_dept_code',
         'birth_date',
         'registration_address', 
-        'living_address'
+        'living_address',
+        'personal_telegram_id',  
+        'personal_telegram_username'
     ]
     if field not in allowed_fields:
         raise ValueError(f"Field '{field}' is not allowed for update.")

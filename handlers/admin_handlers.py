@@ -1662,13 +1662,13 @@ async def start_reset_2fa_confirm(update: Update, context: ContextTypes.DEFAULT_
 
 async def finalize_reset_2fa(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
+    # Не вызываем query.answer() здесь, вызовем его ниже с текстом результата
     
     if query.data == 'confirm_reset_yes':
-        employee_id = context.user_data.get('employee_to_edit_id') # Используем .get для безопасности
+        employee_id = context.user_data.get('employee_to_edit_id')
         
         if not employee_id:
-            await query.edit_message_text("Ошибка: ID сотрудника потерян. Попробуйте выбрать сотрудника заново.")
+            await query.answer("Ошибка: ID сотрудника потерян.", show_alert=True)
             return SELECT_EMPLOYEE_TO_EDIT
 
         employee = await db_manager.get_employee_by_id(employee_id)
@@ -1676,19 +1676,18 @@ async def finalize_reset_2fa(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # Сбрасываем секрет в БД
         await db_manager.set_totp_secret(employee_id, None)
         
-        # Отправляем подтверждение (редактируем сообщение с вопросом)
-        await query.edit_message_text(f"✅ 2FA для сотрудника *{employee['full_name']}* успешно сброшен.", parse_mode='Markdown')
+        # Показываем всплывающее уведомление (Alert) об успехе
+        # Это лучше, чем редактировать сообщение, которое через секунду превратится в меню
+        await query.answer(f"✅ 2FA для сотрудника {employee['full_name']} успешно сброшен!", show_alert=True)
 
-        # Удаляем старое сообщение меню, если оно было сохранено, чтобы не дублировать
-        admin_msg_id = context.user_data.get('admin_menu_message_id')
-        if admin_msg_id:
-            try:
-                await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=admin_msg_id)
-            except Exception:
-                pass
+        # Мы НЕ удаляем старое сообщение (admin_menu_message_id), 
+        # потому что функция show_employee_edit_menu переиспользует его (отредактирует).
+        
     else: # если нажали "Нет, отмена"
-        await query.edit_message_text("Сброс 2FA отменен.")
+        await query.answer("Сброс 2FA отменен.", show_alert=False)
     
+    # Возвращаем меню редактирования. 
+    # Оно автоматически отредактирует текущее сообщение (с вопросом) обратно в меню сотрудника.
     return await show_employee_edit_menu(update, context)
 
 # ========== ЛОГИКА ПРОСМОТРА ГРАФИКА ==========

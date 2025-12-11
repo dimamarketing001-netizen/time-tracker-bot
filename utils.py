@@ -31,7 +31,7 @@ def get_timezone_for_city(city_name: str) -> pytz.timezone:
     if not tz_str:
         # Попытка найти дефолт, если города нет в списке
         return pytz.timezone(DEFAULT_TIMEZONE)
-        
+    
     return pytz.timezone(tz_str)
 
 def generate_table_image(headers: list, data: list, title: str = "") -> io.BytesIO:

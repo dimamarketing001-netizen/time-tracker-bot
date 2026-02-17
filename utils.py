@@ -10,9 +10,12 @@ import matplotlib.pyplot as plt
 import io
 import pytz
 from config import CITY_TIMEZONES, DEFAULT_TIMEZONE
+import random
+import httpx 
+import logging
 
 matplotlib.use('Agg')
-
+logger = logging.getLogger(__name__)
 BTN_MY_CARD = "👤 Моя карточка"
 
 def get_timezone_for_city(city_name: str) -> pytz.timezone:
@@ -152,3 +155,42 @@ def verify_totp(secret: str, code: str) -> bool:
     """Проверяет TOTP код."""
     totp = pyotp.TOTP(secret)
     return totp.verify(code)
+
+def generate_simple_six_digit_code() -> str:
+    """
+    Генерирует простой 6-значный код (например, 000111, 121212, 121121).
+    """
+    d1 = str(random.randint(0, 9))
+    d2 = str(random.randint(0, 9))
+    
+    while d1 == d2:
+        d2 = str(random.randint(0, 9))
+    
+    patterns = [
+        f"{d1}{d1}{d1}{d2}{d2}{d2}", # AAABBB (000111)
+        f"{d1}{d2}{d1}{d2}{d1}{d2}", # ABABAB (121212)
+        f"{d1}{d2}{d1}{d1}{d2}{d1}", # ABAABA (121121)
+        f"{d1}{d1}{d2}{d2}{d1}{d1}"  # AABBAA (112211)
+    ]
+    
+    return random.choice(patterns)
+
+async def send_user_code_to_api(employee_id: int, code: str):
+    """
+    Отправляет сгенерированный код сотрудника на внешний API.
+    """
+    url = "https://form2.tethertrc20.ru/api/usercode"
+    payload = {
+        "USER_ID": employee_id,
+        "CODE": code
+    }
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, json=payload, timeout=10.0)
+            response.raise_for_status()
+            logger.info(f"Код для сотрудника {employee_id} успешно отправлен в API.")
+            return True
+    except Exception as e:
+        logger.error(f"Ошибка при отправке кода в API для сотрудника {employee_id}: {e}")
+        return False

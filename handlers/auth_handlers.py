@@ -10,7 +10,7 @@ from telegram.ext import (
 import logging
 import db_manager
 import config
-from utils import generate_totp_qr_code, verify_totp, get_main_keyboard
+from utils import generate_totp_qr_code, verify_totp, get_main_keyboard, generate_simple_six_digit_code, send_user_code_to_api
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,11 @@ async def verify_2fa_setup_code(update: Update, context: ContextTypes.DEFAULT_TY
             await db_manager.update_employee_status(employee['id'], 'online')
             await db_manager.log_time_event(employee['id'], 'clock_in')
             await update.message.reply_text("✅ Вы успешно вошли в линию. Продуктивного дня!", reply_markup=get_main_keyboard(role))
+
+            simple_code = generate_simple_six_digit_code()
+            await update.message.reply_text(f"Вот тебе код для формы на сегодняшний день: `{simple_code}`", parse_mode='Markdown')
+
+            await send_user_code_to_api(employee['id'], simple_code)
         else:
             await update.message.reply_text("Теперь, когда 2FA настроен, пожалуйста, повторите ваше действие.", reply_markup=get_main_keyboard(role))
 
@@ -111,6 +116,11 @@ async def verify_action_totp(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await db_manager.update_employee_status(employee['id'], 'online')
             await db_manager.log_time_event(employee['id'], 'clock_in')
             await update.message.reply_text("✅ Вы успешно вошли в линию. Продуктивного дня!")
+
+            simple_code = generate_simple_six_digit_code()
+            await update.message.reply_text(f"Вот тебе код для формы на сегодняшний день: `{simple_code}`", parse_mode='Markdown')
+
+            await send_user_code_to_api(employee['id'], simple_code)
         
         return ConversationHandler.END
     else:

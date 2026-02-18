@@ -117,11 +117,14 @@ async def verify_action_totp(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await db_manager.log_time_event(employee['id'], 'clock_in')
             await update.message.reply_text("✅ Вы успешно вошли в линию. Продуктивного дня!")
 
-            simple_code = generate_simple_six_digit_code()
-            await update.message.reply_text(f"Вот тебе код для формы на сегодняшний день: `{simple_code}`", parse_mode='Markdown')
 
-            await send_user_code_to_api(employee['id'], simple_code)
-        
+            simple_code = generate_simple_six_digit_code()
+
+            if await send_user_code_to_api(employee['id'], simple_code):
+                await update.message.reply_text(f"Вот тебе код для формы на сегодняшний день: `{simple_code}`", parse_mode='Markdown')
+            else:
+                await update.message.reply_text(f"Не удалось сгенирировать код. пожалуйста обратитесь к руководителю", parse_mode='Markdown')
+
         return ConversationHandler.END
     else:
         await update.message.reply_text("❌ Неверный код. Попробуйте еще раз или введите /cancel для отмены.")

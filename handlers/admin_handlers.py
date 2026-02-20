@@ -485,7 +485,7 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     phone = update.message.text.strip()
     context.user_data['new_employee']['personal_phone'] = phone
     
-    positions = ["Кассир", "Инспектор ФБ", "Оператор", "Чат менеджер", "СБ", "Администратор", "Логист", "Менеджер АХО"]
+    positions = ["Кассир", "Инспектор ФБ", "Оператор", "Чат менеджер", "СБ", "Администратор", "Логист", "Менеджер АХО", "Куратор"]
     buttons = [InlineKeyboardButton(pos, callback_data=f"pos_{pos}") for pos in positions]
     keyboard_rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
     reply_markup = InlineKeyboardMarkup(keyboard_rows)
@@ -589,10 +589,15 @@ async def get_schedule_pattern(update: Update, context: ContextTypes.DEFAULT_TYP
 async def ask_role_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Вспомогательная функция для показа выбора роли."""
     keyboard = [
-        [InlineKeyboardButton("Admin", callback_data='role_Admin')],
+        [InlineKeyboardButton("Сashier", callback_data='role_Сashier')],
+        [InlineKeyboardButton("Сhat_manager", callback_data='role_Сhat_manager')],
+        [InlineKeyboardButton("Operator", callback_data='role_Operator')],
+        [InlineKeyboardButton("Training_manager", callback_data='role_Training_manager')],
         [InlineKeyboardButton("Security", callback_data='role_Security')],
         [InlineKeyboardButton("Employee", callback_data='role_Employee')],
+        [InlineKeyboardButton("Сurator", callback_data='role_Сurator')],
     ]
+
     # Если мы пришли из функции get_schedule_pattern (где был query), редактируем сообщение
     # Если из get_schedule_anchor (где был текст), отправляем новое
     if update.callback_query:

@@ -363,7 +363,7 @@ async def route_selected_employee(update: Update, context: ContextTypes.DEFAULT_
             f"<b>Username:</b> @{safe(employee.get('personal_telegram_username'))}\n\n"
             f"<b>График:</b> {safe(employee.get('schedule_pattern'))} ({safe(employee.get('default_start_time'))}-{safe(employee.get('default_end_time'))})\n"
             f"<b>Адрес:</b> {safe(employee.get('living_address'))}\n"
-            f"<b>Паспорт:</b> {safe(employee.get('passport_data'))}\n"
+            # f"<b>Паспорт:</b> {safe(employee.get('passport_data'))}\n"
             f"<b>ДР:</b> {safe(employee.get('birth_date'))}\n"
         )
         

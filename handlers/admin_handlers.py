@@ -347,37 +347,40 @@ async def route_selected_employee(update: Update, context: ContextTypes.DEFAULT_
     elif action_type == 'view_card_details':
         employee = await db_manager.get_employee_by_id(employee_id)
         
-        def safe(val): return str(val) if val is not None and val != "" else "-"
+        def safe(val): 
+            return str(val) if val is not None and val != "" else "-"
 
+        # Используем HTML теги вместо звездочек
         text = (
-            f"📂 *КАРТОЧКА СОТРУДНИКА*\n"
+            f"📂 <b>КАРТОЧКА СОТРУДНИКА</b>\n"
             f"ID: {employee['id']}\n\n"
-            f"*ФИО:* {safe(employee['full_name'])}\n"
-            f"*Должность:* {safe(employee.get('position'))}\n"
-            f"*Город:* {safe(employee.get('city'))}\n"
-            f"*Роль:* {safe(employee.get('role'))}\n"
-            f"*Телефон:* {safe(employee.get('personal_phone'))}\n"
-            f"*Telegram ID:* {safe(employee.get('personal_telegram_id'))}\n"
-            f"*Username:* @{safe(employee.get('personal_telegram_username'))}\n\n"
-            f"*График:* {safe(employee.get('schedule_pattern'))} ({safe(employee.get('default_start_time'))}-{safe(employee.get('default_end_time'))})\n"
-            f"*Адрес:* {safe(employee.get('living_address'))}\n"
-            f"*Паспорт:* {safe(employee.get('passport_data'))}\n"
-            f"*ДР:* {safe(employee.get('birth_date'))}\n"
+            f"<b>ФИО:</b> {safe(employee['full_name'])}\n"
+            f"<b>Должность:</b> {safe(employee.get('position'))}\n"
+            f"<b>Город:</b> {safe(employee.get('city'))}\n"
+            f"<b>Роль:</b> {safe(employee.get('role'))}\n"
+            f"<b>Телефон:</b> {safe(employee.get('personal_phone'))}\n"
+            f"<b>Telegram ID:</b> {safe(employee.get('personal_telegram_id'))}\n"
+            f"<b>Username:</b> @{safe(employee.get('personal_telegram_username'))}\n\n"
+            f"<b>График:</b> {safe(employee.get('schedule_pattern'))} ({safe(employee.get('default_start_time'))}-{safe(employee.get('default_end_time'))})\n"
+            f"<b>Адрес:</b> {safe(employee.get('living_address'))}\n"
+            f"<b>Паспорт:</b> {safe(employee.get('passport_data'))}\n"
+            f"<b>ДР:</b> {safe(employee.get('birth_date'))}\n"
         )
         
         relatives = await db_manager.get_employee_relatives(employee_id)
         if relatives:
-            text += "\n👨‍👩‍👧 *Родственники:*"
+            text += "\n👨‍👩‍👧 <b>Родственники:</b>"
             for rel in relatives:
                 text += f"\n- {rel['relationship_type']}: {rel['last_name']} {rel['first_name']} ({safe(rel.get('phone_number'))})"
         
         keyboard = [
             [InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_emp_{employee_id}")],
-            [InlineKeyboardButton("⬅️ К списку сотрудников", callback_data="back_to_positions")] # Вернет к списку
+            [InlineKeyboardButton("⬅️ К списку сотрудников", callback_data="back_to_positions")]
         ]
         
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-        return SELECT_EMPLOYEE_FROM_LIST # Или можно вернуть ADMIN_MAIN_MENU, но так удобнее
+        # ВАЖНО: меняем parse_mode на 'HTML'
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
+        return SELECT_EMPLOYEE_FROM_LIST
         
     else:
         await query.edit_message_text("Ошибка: неизвестное действие.")
